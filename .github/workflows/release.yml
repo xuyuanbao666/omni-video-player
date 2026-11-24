@@ -85,6 +85,21 @@ jobs:
             cp "$apk" "dist/OmniPlayer-Android-${abi#app-}-test.apk"
           done
 
+      - name: Validate Android signatures and package metadata
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          if [[ ! -x "$tools/apksigner" ]]; then
+            sdkmanager 'build-tools;36.0.0'
+          fi
+          for apk in dist/*.apk; do
+            "$tools/apksigner" verify --verbose --print-certs "$apk"
+            "$tools/aapt2" dump badging "$apk"
+            "$tools/zipalign" -c -v 4 "$apk" >/dev/null
+          done
+
       - name: Build Windows and installer
         if: matrix.platform == 'windows'
         shell: pwsh
