@@ -1,7 +1,7 @@
 name: Six-platform build and release
 on:
   push:
-    branches: [main, 'feature/v0.3.0']
+    branches: [main, 'feature/**']
     tags: ['v*']
     paths-ignore:
       - '**/*.md'
