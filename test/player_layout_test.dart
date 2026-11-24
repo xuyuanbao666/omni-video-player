@@ -28,12 +28,14 @@ void main() {
     expect(orientationsFor(ScreenDirection.automatic,fullscreen:false), isEmpty);
   });
   testWidgets('drag previews locally and seeks once on release', (tester) async {
-    final positions = StreamController<Duration>();
-    final durations = StreamController<Duration>();
+    // Empty streams suffice: this test asserts gesture behavior with initial values.
+    // Avoid awaiting controller.close() in the widget test's fake async zone.
+    const positions = Stream<Duration>.empty();
+    const durations = Stream<Duration>.empty();
     final calls = <double>[];
     final scrubbing = <bool>[];
     await tester.pumpWidget(MaterialApp(home:Scaffold(body:PlaybackScrubber(
-      position:positions.stream,duration:durations.stream,initialPosition:const Duration(seconds:10),
+      position:positions,duration:durations,initialPosition:const Duration(seconds:10),
       initialDuration:const Duration(seconds:100),enabled:true,onScrubbing:scrubbing.add,
       onSeek:(v)async{calls.add(v);},formatTime:(ms)=>ms.toString(),
     ))));
@@ -50,7 +52,6 @@ void main() {
     expect(scrubbing,[true,false]);
     expect(tester.takeException(),isNull);
     await tester.pumpWidget(const SizedBox.shrink());
-    await positions.close();
-    await durations.close();
+    await tester.pump();
   });
 }
