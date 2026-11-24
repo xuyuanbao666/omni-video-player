@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    paths-ignore:
+      - '**/*.md'
+      - '.github/workflows/promote-v0.2.0.yml'
   workflow_dispatch:
 permissions:
   contents: read
