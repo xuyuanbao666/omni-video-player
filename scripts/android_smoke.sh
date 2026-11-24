@@ -13,3 +13,4 @@ if ! adb shell pidof "$pkg"; then adb logcat -d -t 800; exit 1; fi
 adb exec-out screencap -p > android-smoke.png
 test -s android-smoke.png
 echo "Installed and process running: $pkg"
+python3 scripts/android_playback_smoke.py omni-smoke-video.mp4

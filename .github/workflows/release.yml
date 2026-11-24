@@ -102,6 +102,13 @@ jobs:
             "$tools/zipalign" -c -v 4 "$apk" >/dev/null
           done
 
+      - name: Generate local playback test fixture
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null; then sudo apt-get update && sudo apt-get install -y ffmpeg; fi
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -t 60 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y omni-smoke-video.mp4
       - name: Enable Android emulator KVM
         if: matrix.platform == 'android'
         run: |
@@ -118,13 +125,18 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk
-      - name: Upload Android UI smoke screenshot
-        if: matrix.platform == 'android'
+      - name: Upload Android playback screenshots
+        if: matrix.platform == 'android' && always()
         uses: actions/upload-artifact@v4
         with:
           name: android-ui-smoke
-          path: android-smoke.png
-          if-no-files-found: error
+          path: |
+            android-smoke.png
+            android-portrait-playing.png
+            android-landscape-playing.png
+            android-landscape-locked.png
+            android-playback-failure.png
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Build Windows and installer

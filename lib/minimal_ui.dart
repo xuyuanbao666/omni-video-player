@@ -42,3 +42,23 @@ class FloatingDock extends StatelessWidget {
     ),
   );
 }
+
+/// Video controls use a thin edge gradient, never a frosted card over the film.
+class CinemaControls extends StatelessWidget {
+  const CinemaControls({super.key, required this.visible, required this.fullscreen, required this.child});
+  final bool visible, fullscreen;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => IgnorePointer(ignoring: !visible,
+    child: ExcludeSemantics(excluding: !visible,
+      child: ExcludeFocus(excluding: !visible, child: AnimatedOpacity(
+        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 160),
+        opacity: visible ? 1 : 0,
+        child: DecoratedBox(decoration: BoxDecoration(
+          gradient: fullscreen ? const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
+            colors: [Colors.transparent, Color(0x99000000), Color(0xd9000000)]) : null),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: child),
+        ),
+      )),
+    ));
+}
