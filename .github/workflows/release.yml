@@ -84,6 +84,8 @@ jobs:
             abi="$(basename "$apk" -release.apk)"
             cp "$apk" "dist/OmniPlayer-Android-${abi#app-}-test.apk"
           done
+          flutter build apk --release --target-platform android-arm,android-arm64,android-x64
+          cp build/app/outputs/flutter-apk/app-release.apk dist/OmniPlayer-Android-universal-test.apk
 
       - name: Validate Android signatures and package metadata
         if: matrix.platform == 'android'
@@ -99,6 +101,31 @@ jobs:
             "$tools/aapt2" dump badging "$apk"
             "$tools/zipalign" -c -v 4 "$apk" >/dev/null
           done
+
+      - name: Enable Android emulator KVM
+        if: matrix.platform == 'android'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and launch universal APK
+        if: matrix.platform == 'android'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk
+      - name: Upload Android UI smoke screenshot
+        if: matrix.platform == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ui-smoke
+          path: android-smoke.png
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Build Windows and installer
         if: matrix.platform == 'windows'
@@ -186,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          for glob in 'OmniPlayer-Android-arm64-v8a-test.apk' 'OmniPlayer-Android-armeabi-v7a-test.apk' 'OmniPlayer-Android-x86_64-test.apk' 'OmniPlayer-Windows-x64-Setup.exe' 'OmniPlayer-Windows-x64-portable.zip' 'OmniPlayer-macOS-*-unnotarized.dmg' 'OmniPlayer-Linux-x64.tar.gz' 'OmniPlayer-iOS-unsigned-app.zip' 'OmniPlayer-Web.zip'; do
+          for glob in 'OmniPlayer-Android-arm64-v8a-test.apk' 'OmniPlayer-Android-armeabi-v7a-test.apk' 'OmniPlayer-Android-x86_64-test.apk' 'OmniPlayer-Android-universal-test.apk' 'OmniPlayer-Windows-x64-Setup.exe' 'OmniPlayer-Windows-x64-portable.zip' 'OmniPlayer-macOS-*-unnotarized.dmg' 'OmniPlayer-Linux-x64.tar.gz' 'OmniPlayer-iOS-unsigned-app.zip' 'OmniPlayer-Web.zip'; do
             compgen -G "$glob" >/dev/null || { echo "Missing asset: $glob"; exit 1; }
           done
           sha256sum OmniPlayer-* > SHA256SUMS.txt

@@ -55,26 +55,25 @@ class GlassBackdrop extends StatelessWidget {
   final bool enabled;
   @override
   Widget build(BuildContext context) {
-    if (!enabled) return child;
     final dark = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(gradient: LinearGradient(
         begin: Alignment.topLeft, end: Alignment.bottomRight,
-        colors: dark ? const [Color(0xff0b1429), Color(0xff1c2449), Color(0xff102d37)]
+        colors: !enabled ? const [Colors.transparent, Colors.transparent] : dark ? const [Color(0xff0b1429), Color(0xff1c2449), Color(0xff102d37)]
           : const [Color(0xffe4eeff), Color(0xfff1e9ff), Color(0xffe1f7f4)],
       )),
       child: Stack(fit: StackFit.expand, children: [
         Positioned.fill(child: IgnorePointer(child: DecoratedBox(
           decoration: BoxDecoration(gradient: RadialGradient(
             center: const Alignment(-.94, -.85), radius: .95,
-            colors: dark ? const [Color(0xff394e86), Color(0x00394e86)]
+            colors: !enabled ? const [Colors.transparent, Colors.transparent] : dark ? const [Color(0xff394e86), Color(0x00394e86)]
               : const [Color(0xffadc9fa), Color(0x00adc9fa)],
           )),
         ))),
         Positioned.fill(child: IgnorePointer(child: DecoratedBox(
           decoration: BoxDecoration(gradient: RadialGradient(
             center: const Alignment(.95, .95), radius: .85,
-            colors: dark ? const [Color(0xff1c5a62), Color(0x001c5a62)]
+            colors: !enabled ? const [Colors.transparent, Colors.transparent] : dark ? const [Color(0xff1c5a62), Color(0x001c5a62)]
               : const [Color(0xff9edbd4), Color(0x009edbd4)],
           )),
         ))),
