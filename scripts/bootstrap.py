@@ -35,13 +35,23 @@ if 'android' in selected:
     text = manifest.read_text(encoding='utf-8')
     if 'android:label="omni_player"' in text:
         manifest.write_text(text.replace('android:label="omni_player"', 'android:label="Omni Player"'), encoding='utf-8')
+    # Install the Android PiP bridge into the generated launcher activity.
+    activity = next((root / 'android/app/src/main/kotlin').rglob('MainActivity.kt'))
+    package_line = activity.read_text(encoding='utf-8').splitlines()[0]
+    template = (root / 'packaging/android/MainActivity.kt.template').read_text(encoding='utf-8')
+    activity.write_text(template.replace('@PACKAGE@', package_line), encoding='utf-8')
+    text = manifest.read_text(encoding='utf-8')
+    if 'android:supportsPictureInPicture=' not in text:
+        text = text.replace('<activity', '<activity android:supportsPictureInPicture="true"', 1)
+        manifest.write_text(text, encoding='utf-8')
 if 'macos' in selected:
     for filename in ('DebugProfile.entitlements', 'Release.entitlements'):
         path = root / 'macos/Runner' / filename
         with path.open('rb') as handle:
             config = plistlib.load(handle)
         config['com.apple.security.network.client'] = True
-        config['com.apple.security.files.user-selected.read-only'] = True
+        config.pop('com.apple.security.files.user-selected.read-only', None)
+        config['com.apple.security.files.user-selected.read-write'] = True
         with path.open('wb') as handle:
             plistlib.dump(config, handle)
 subprocess.run([flutter, 'pub', 'get'], cwd=root, check=True)
