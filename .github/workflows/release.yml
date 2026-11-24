@@ -5,7 +5,7 @@ on:
     tags: ['v*']
     paths-ignore:
       - '**/*.md'
-      - '.github/workflows/promote-v0.2.0.yml'
+      - '.github/workflows/promote-v*.yml'
   workflow_dispatch:
 permissions:
   contents: read

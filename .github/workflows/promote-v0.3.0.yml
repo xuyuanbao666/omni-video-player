@@ -1,0 +1,154 @@
+name: Publish verified v0.3.0 release
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-v0.3.0.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: omni-v0.3.0-promotion
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN: '45451999021'
+      CHECK_RUN: '45452029261'
+      TESTED_SHA: dc8d78af0a5005832dc77c3c6678be9ab84258fc
+      MERGED_SHA: 19e28ea27f735657c0dc37af42977de80b9e9486
+      RELEASE_TAG: v0.3.0
+    steps:
+      - name: Verify successful builds and merged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for run in "$BUILD_RUN" "$CHECK_RUN"; do
+            test "$(gh api "repos/$GH_REPO/actions/runs/$run" --jq .conclusion)" = success
+            test "$(gh api "repos/$GH_REPO/actions/runs/$run" --jq .head_sha)" = "$TESTED_SHA"
+          done
+          test "$(gh api "repos/$GH_REPO/pulls/1" --jq .merged)" = true
+          test "$(gh api "repos/$GH_REPO/pulls/1" --jq .merge_commit_sha)" = "$MERGED_SHA"
+          test "$(gh api "repos/$GH_REPO/git/commits/$TESTED_SHA" --jq .tree.sha)" = "$(gh api "repos/$GH_REPO/git/commits/$MERGED_SHA" --jq .tree.sha)"
+      - name: Download six original CI archives and verify SHA-256 digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p archives dist
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN/artifacts?per_page=100" > artifacts.json
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess, zipfile
+          expected = {
+              'omni-windows': (14949406079, '8a434c201ef2d84bab7689b1e89a8196a8ff9e37729fabba34e6ef4fb4feb7db'),
+              'omni-web': (14949355751, '15533a333c62a21f2c053328bca8027e203151148a9dfd123c75af661091ea38'),
+              'omni-ios': (14949056514, '8eedbaf38eae245eb51e9960ce57ad638253b25091f099c8e9d2dc12cf0179c6'),
+              'omni-macos': (14948941951, '8c6b82d74ce3372ecdd075fb7dff6fe54fe4531d9642a2b2bf5acc5a7b58e9f1'),
+              'omni-linux': (14948897296, '3847b3a628c9a48b0495ee54b86ad34ba3a945b6aebb21a9da2096704e71e749'),
+              'omni-android': (14948714432, 'a3b51d6e51ec9b7a693ab35ea282bff773eff348c2c91a2fecd6f2f455250dc3'),
+          }
+          names = {
+              'omni-windows': {'OmniPlayer-Windows-x64-Setup.exe','OmniPlayer-Windows-x64-portable.zip'},
+              'omni-web': {'OmniPlayer-Web.zip'},
+              'omni-ios': {'OmniPlayer-iOS-unsigned-app.zip'},
+              'omni-macos': {'OmniPlayer-macOS-arm64-unnotarized.dmg'},
+              'omni-linux': {'OmniPlayer-Linux-x64.tar.gz'},
+              'omni-android': {'OmniPlayer-Android-arm64-v8a-test.apk','OmniPlayer-Android-armeabi-v7a-test.apk','OmniPlayer-Android-x86_64-test.apk'},
+          }
+          metadata = json.load(open('artifacts.json'))['artifacts']
+          assert {a['name'] for a in metadata} == set(expected)
+          for a in metadata:
+              name = a['name']
+              ident, digest = expected[name]
+              assert a['id'] == ident and not a['expired'] and a['digest'] == 'sha256:'+digest
+              archive = pathlib.Path('archives') / (name + '.zip')
+              with archive.open('wb') as out:
+                  subprocess.run(['gh','api',f"repos/{os.environ['GH_REPO']}/actions/artifacts/{ident}/zip"], stdout=out, check=True)
+              with archive.open('rb') as inp:
+                  actual = hashlib.file_digest(inp,'sha256').hexdigest() if hasattr(hashlib,'file_digest') else hashlib.sha256(inp.read()).hexdigest()
+              assert actual == digest, f'Artifact digest mismatch: {name}'
+              with zipfile.ZipFile(archive) as z:
+                  assert z.testzip() is None
+                  files = [i for i in z.infolist() if not i.is_dir()]
+                  assert {i.filename for i in files} == names[name], name
+                  assert len(files) == len(names[name])
+                  for i in files:
+                      assert i.file_size > 0
+                      with z.open(i) as source, (pathlib.Path('dist') / i.filename).open('xb') as out:
+                          shutil.copyfileobj(source,out)
+              print('Verified archive:',name)
+          PY
+      - name: Inspect all nine software packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, tarfile, zipfile
+          root = pathlib.Path('dist')
+          for p in sorted(root.iterdir()):
+              assert p.stat().st_size > 0
+              if p.suffix in {'.apk','.zip'}:
+                  with zipfile.ZipFile(p) as z:
+                      assert z.testzip() is None, p
+                      names = z.namelist()
+                      if p.suffix == '.apk':
+                          assert 'AndroidManifest.xml' in names and 'classes.dex' in names, p
+                      elif 'Windows' in p.name:
+                          assert any(n.lower().endswith('omni_player.exe') for n in names), p
+                      elif 'iOS' in p.name:
+                          assert any(n.endswith('Runner.app/Info.plist') for n in names), p
+                      elif 'Web' in p.name:
+                          assert any(n == 'index.html' or n.endswith('/index.html') for n in names), p
+              elif p.suffix == '.exe':
+                  with p.open('rb') as f:
+                      assert f.read(2) == b'MZ', p
+              elif p.suffix == '.dmg':
+                  with p.open('rb') as f:
+                      f.seek(-512, 2)
+                      assert f.read(4) == b'koly', p
+              elif p.name.endswith('.tar.gz'):
+                  with tarfile.open(p,'r:gz') as t:
+                      assert any(m.isfile() and pathlib.PurePosixPath(m.name).name == 'omni_player' for m in t), p
+                  with __import__('gzip').open(p,'rb') as f:
+                      while f.read(1024*1024): pass
+              else:
+                  raise AssertionError(f'Unexpected file {p}')
+              print('Package structure verified:', p.name, p.stat().st_size)
+          assert len(list(root.iterdir())) == 9
+          PY
+          (cd dist && sha256sum OmniPlayer-* > SHA256SUMS.txt && sha256sum --check --strict SHA256SUMS.txt)
+      - name: Publish stable GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; not overwriting.'
+            exit 0
+          fi
+          cat > notes.md <<'EOF'
+          ## Omni Video Player v0.3.0 专业播放器版
+
+          六平台自动构建及单元测试通过；使用原始 CI 产物，核验六个构建归档的 SHA-256、九个软件包的文件结构及完整性。对应已合并的 PR #1。
+
+          ### 更新
+          - 响应式播放器界面、深浅色主题及中英文切换。
+          - 媒体库、收藏、搜索、排序、桌面授权目录导入。
+          - 手势进度、音量、画面暗度、双击快进快退、长按倍速、键盘快捷键。
+          - 音频轨道、视频显示比例、沉浸模式。
+          - GitHub 最新正式版本检查（不静默下载安装）。
+          - 保留字幕、断点续播、截图、Android 画中画等原有功能。
+
+          ### 安装
+          Android APK 为测试签名，升级时可能需卸载旧版本；Windows 安装器未代码签名；macOS 为 Apple Silicon 未公证 DMG；Linux x64 需系统运行库；iOS 为未签名 APP 压缩包，不能直接安装；Web 解压后通过静态服务器运行。
+
+          媒体库使用占位图标；亮度手势只调整画面暗度。包结构检查不等同于真机安装与播放验证。第三方许可及签名仍需审核。请使用 SHA256SUMS.txt 校验下载文件。
+          EOF
+          gh release create "$RELEASE_TAG" dist/* --target "$MERGED_SHA" --title "Omni Video Player v0.3.0" --notes-file notes.md --latest
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
+          test "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')" = 10
