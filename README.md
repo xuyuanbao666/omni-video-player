@@ -59,7 +59,7 @@ python scripts/bootstrap.py
 
 | 平台 | 产物 | 说明 |
 |---|---|---|
-| Android | 3 个 ABI 的 APK | 测试签名；不保证跨 CI 版本覆盖安装 |
+| Android | 通用及 3 个 ABI 的 APK | v0.4.2 起要求固定发布签名；旧测试签名迁移可能需要卸载一次 |
 | Windows | Setup.exe、portable.zip | x64 Inno Setup 安装包及便携版，未签名 |
 | macOS | DMG | CI 主机架构；未 notarize |
 | Linux | tar.gz | x64，需系统 libmpv、GTK 等运行库 |
@@ -104,3 +104,20 @@ python scripts/bootstrap.py
 - 滑块独立局部刷新，只在松手时 seek；视频纹理 widget 保持稳定，拖动时暂停控制栏自动隐藏、缩略图截图及瞬时缓冲提示。解码器/网络跳转仍可能短暂等待，真机验证后才能判断闪屏是否完全消失。
 - Android/iOS 显式选择自动、横屏、竖屏；手机全屏请求横屏，退出恢复原方向策略。系统或大屏窗口可能限制方向/系统栏控制。
 - Android 同时构建通用 APK 与三种 ABI APK，增加签名校验、Android 模拟器安装/启动检查。通用包为测试签名，更新前请备份；不同构建密钥可能需要卸载旧版。真机测试仍需执行。
+
+## v0.4.2 Android 固定发布签名与图标
+
+**一次性迁移：** v0.4.1 及更早的公开 APK 使用临时测试密钥，无法从 APK 取回私钥。若新旧证书不同，需要备份数据并卸载旧版一次。自首个固定发布签名版起，保持同一包名、同一发布密钥及递增 versionCode，即可覆盖更新。建议始终使用 Universal 通用 APK；不同 ABI 分包的 Flutter versionCode 偏移不同，不保证随意切换包型。新通用版的 build number 提升到 5007，后续必须继续递增。发布签名不是 Google Play 认证或商店上架。
+
+### 仓库所有者的一次性配置（在自己的电脑执行）
+安装 Python 3.9+、JDK 和 GitHub CLI，登录具备本仓库管理权限的账号（gh auth login）。检出 feature/v0.4.2 分支后，运行：
+
+```powershell
+python scripts/setup_android_signing.py --keystore "$HOME/omni-release.p12"
+```
+
+脚本交互式生成或读取 PKCS12 密钥（别名 omni-release），用本机 gh CLI 通过 stdin 设置三个 Actions repository secrets：OMNI_ANDROID_KEYSTORE_B64、OMNI_ANDROID_KEYSTORE_PASSWORD、OMNI_ANDROID_CERT_SHA256。私钥必须保存在仓库外并制作加密离线备份，密码另行安全保存。切勿在聊天、日志、Issue、PR 或代码里粘贴任何私钥或密码；证书 SHA-256 是公开指纹。脚本拒绝覆盖现有配置；若部分上传失败，用原密钥补齐剩余 secrets，不要重建。只允许受信任的仓库写入者修改签名工作流。
+
+签名步骤只在需要签名时读取 secrets，并在临时目录创建密钥、退出删除。缺少任一配置则阻断 Android 构建/发布，不会回退为临时签名。四个 APK 发布证书必须相同，并附 ANDROID-CERT-SHA256.txt。升级测试使用 adb install -r，检查版本递增、首次安装时间保留及应用启动。初次迁移只用重新签名的 v0.4.1 作为内部测试夹具（不公开），不能证明旧公开 APK 可直接升级；后续使用实际上一正式版的同证书通用 APK 测试。其余平台签名不变。
+
+Android 启动器已更换为 Omni 蓝色播放标志，含 Android 8+ 自适应图标及旧版兼容图标。配置完成后重试失败的 Android 构建任务即可复用其余平台产物。
