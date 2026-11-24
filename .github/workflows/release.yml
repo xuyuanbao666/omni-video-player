@@ -1,11 +1,10 @@
 name: Six-platform build and release
 on:
   push:
-    branches: [main, 'feature/**']
-    tags: ['v*']
+    branches: ['feature/**']
     paths-ignore:
       - '**/*.md'
-      - '.github/workflows/promote-v*.yml'
+      - '.github/workflows/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -155,7 +154,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
@@ -184,11 +183,7 @@ jobs:
           set -euo pipefail
           version="$(sed -nE 's/^version: ([^+ ]+).*/\1/p' pubspec.yaml)"
           test -n "$version"
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tag="$GITHUB_REF_NAME"
-          else
-            tag="preview-v$version-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT"
-          fi
+          tag="preview-v$version-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT"
           cat > release-notes.md <<'EOF'
           Automated preview build. All six build jobs and unit tests must succeed before publishing.
           

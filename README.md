@@ -55,7 +55,7 @@ python scripts/bootstrap.py
 
 [Actions](https://github.com/xuyuanbao666/omni-video-player/actions) · [Releases](https://github.com/xuyuanbao666/omni-video-player/releases)
 
-每次推送 main、推送 v* 标签，或在 Actions 手动执行 Six-platform build and release 时，先运行静态分析和单元测试，然后在各平台的 GitHub 托管 runner 并行打包。所有六个平台均成功后才发布预览版 Release，且提供 SHA256SUMS.txt。main 每次构建使用唯一预览标签，不会覆盖旧版本。固定使用 Flutter 3.38.9；更新 SDK 后需重新验证。
+推送 feature/** 分支的代码变更时，或在 Actions 手动执行 Six-platform build and release 时，先运行静态分析和单元测试，再执行六平台构建。开发分支仅上传构建产物；合并 main、推送版本标签、仅修改文档或工作流不会自动重复打包。PR 仍运行 Flutter checks。若修改打包配置，或直接修改 main，应手动运行六平台验证。正式发行使用独立的校验发布工作流，复用已通过验证且与合并代码一致的产物；在 main 手动运行六平台工作流可生成唯一预览版，提供 SHA256SUMS.txt，不覆盖正式版。固定使用 Flutter 3.38.9；更新 SDK 后需重新验证。
 
 | 平台 | 产物 | 说明 |
 |---|---|---|
@@ -85,7 +85,7 @@ python scripts/bootstrap.py
 - 导入文件或桌面授权目录（扫描上限 1000 个媒体文件，忽略符号链接），收藏、搜索、排序、删除；最多保存 2000 项。Web 临时地址仅会话内有效；移动端文件路径受系统访问权限限制，失效时重新导入。媒体图标为占位图，尚未生成真实缩略图。
 - 双击左/右快退快进；横滑预览进度，右侧上下滑调音量，左侧上下滑调画面暗度（非系统屏幕亮度），长按 2 倍速；键盘 Space、方向键、M、F、S 控制播放。音轨切换、原比例/裁剪/拉伸、沉浸式界面；桌面沉浸模式是应用内布局，不是系统窗口全屏。
 - 启动时可检查 GitHub 最新正式版，可关闭；手动检查及打开发行页面，不自动下载或安装。只在检查更新时访问固定 GitHub API。
-- feature/v0.3.0 分支推送后执行六平台 CI、保存 Actions Artifacts，不自动发行；合并 main 后走现有预览发布流程。
+- feature/v0.3.0 分支推送后执行六平台 CI、保存 Actions Artifacts，不自动发行；自 v0.3.1 起采用独立的校验发布工作流，不因合并重复构建。
 - 新增媒体库、版本比较、隐私规则单元测试；真机体验与签名仍待验证。
 
 ## v0.3.1 玻璃 UI
