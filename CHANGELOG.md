@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Professional responsive player layout and light/dark themes, Chinese/English UI.
+- Imported media library with folder scan on desktop, search, sort and favorites.
+- Touch gestures, keyboard shortcuts, audio track selection and video fit modes.
+- GitHub stable release update checker (no automatic installation).
+- Playback/history safeguards and six-platform development builds.
+
 ## 0.2.0
 
 - Subtitle track picker and external UTF-8 subtitle loading.
