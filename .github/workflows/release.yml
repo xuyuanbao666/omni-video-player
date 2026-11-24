@@ -1,0 +1,202 @@
+name: Six-platform build and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: omni-release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  FLUTTER_VERSION: '3.38.9'
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: python3 scripts/bootstrap.py --platform web
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android
+            os: ubuntu-22.04
+          - platform: windows
+            os: windows-2022
+          - platform: macos
+            os: macos-15
+          - platform: linux
+            os: ubuntu-22.04
+          - platform: ios
+            os: macos-15
+          - platform: web
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Configure Android JDK
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Linux libraries
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev mpv
+      - name: Generate platform runner
+        run: python scripts/bootstrap.py --platform ${{ matrix.platform }}
+      - name: Build Android APKs
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build apk --release --split-per-abi
+          mkdir -p dist
+          for apk in build/app/outputs/flutter-apk/app-*-release.apk; do
+            test -f "$apk"
+            abi="$(basename "$apk" -release.apk)"
+            cp "$apk" "dist/OmniPlayer-Android-${abi#app-}-test.apk"
+          done
+
+      - name: Build Windows and installer
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/OmniPlayer-Windows-x64-portable.zip
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --version=6.4.3 --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup compiler missing' }
+          $version = ((Get-Content pubspec.yaml | Select-String '^version:\s*([^+\s]+)').Matches[0].Groups[1].Value)
+          & $compiler "/DMyAppVersion=$version" "packaging/windows/omni-player.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path dist/OmniPlayer-Windows-x64-Setup.exe)) { throw 'Installer missing' }
+
+      - name: Build macOS DMG
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build macos --release
+          mkdir -p dist staging
+          app="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          ditto "$app" "staging/Omni Player.app"
+          ln -s /Applications staging/Applications
+          hdiutil create -volname "Omni Player" -srcfolder staging -format UDZO "dist/OmniPlayer-macOS-$(uname -m)-unnotarized.dmg"
+
+      - name: Build Linux archive
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build linux --release
+          mkdir -p dist
+          tar -czf dist/OmniPlayer-Linux-x64.tar.gz -C build/linux/x64/release/bundle .
+      - name: Build unsigned iOS app
+        if: matrix.platform == 'ios'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build ios --release --no-codesign
+          mkdir -p dist
+          test -d build/ios/iphoneos/Runner.app
+          ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app dist/OmniPlayer-iOS-unsigned-app.zip
+
+      - name: Build Web archive
+        if: matrix.platform == 'web'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build web --release
+          mkdir -p dist
+          (cd build/web && zip -qr ../../dist/OmniPlayer-Web.zip .)
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: omni-*
+          path: dist
+          merge-multiple: true
+      - name: Verify expected assets and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for glob in 'OmniPlayer-Android-arm64-v8a-test.apk' 'OmniPlayer-Android-armeabi-v7a-test.apk' 'OmniPlayer-Android-x86_64-test.apk' 'OmniPlayer-Windows-x64-Setup.exe' 'OmniPlayer-Windows-x64-portable.zip' 'OmniPlayer-macOS-*-unnotarized.dmg' 'OmniPlayer-Linux-x64.tar.gz' 'OmniPlayer-iOS-unsigned-app.zip' 'OmniPlayer-Web.zip'; do
+            compgen -G "$glob" >/dev/null || { echo "Missing asset: $glob"; exit 1; }
+          done
+          sha256sum OmniPlayer-* > SHA256SUMS.txt
+      - name: Publish preview release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version: ([^+ ]+).*/\1/p' pubspec.yaml)"
+          test -n "$version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="preview-v$version-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT"
+          fi
+          cat > release-notes.md <<'EOF'
+          Automated preview build. All six build jobs and unit tests must succeed before publishing.
+          
+          - Android: test-signed APKs, select your ABI (most modern phones use arm64-v8a). Not a Play Store release; test keys may differ between CI runs.
+          - Windows: unsigned x64 setup EXE and portable ZIP; Windows may display a publisher warning.
+          - macOS: unnotarized DMG; not a Developer ID distribution.
+          - Linux: x64 bundle; install libmpv and GTK runtime dependencies.
+          - iOS: unsigned device app ZIP, not directly installable or an App Store IPA. Apple signing is required.
+          - Web: unzip and serve with an HTTP server.
+          
+          Verify SHA256SUMS.txt before installing. These builds have not been tested on every device.
+          Third-party codec and library redistribution obligations must be reviewed before formal distribution.
+          EOF
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "Omni Player $tag" --notes-file release-notes.md --prerelease

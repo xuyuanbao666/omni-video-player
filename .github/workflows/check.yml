@@ -1,22 +1,21 @@
 name: Flutter checks
 on:
-  push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.38.9'
           channel: stable
-      - run: python3 scripts/bootstrap.py
+          cache: true
+      - run: python3 scripts/bootstrap.py --platform web
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - run: flutter build web --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: web-player
-          path: build/web

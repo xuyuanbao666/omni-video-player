@@ -49,3 +49,23 @@ python scripts/bootstrap.py
 ```
 
 第三方库许可及编解码器分发要求请在公开发布安装包前审查。该项目未声明独立许可证，仓库所有者可按需选择。
+
+
+## 自动打包与 Releases
+
+[Actions](https://github.com/xuyuanbao666/-/actions) · [Releases](https://github.com/xuyuanbao666/-/releases)
+
+每次推送 main、推送 v* 标签，或在 Actions 手动执行 Six-platform build and release 时，先运行静态分析和单元测试，然后在各平台的 GitHub 托管 runner 并行打包。所有六个平台均成功后才发布预览版 Release，且提供 SHA256SUMS.txt。main 每次构建使用唯一预览标签，不会覆盖旧版本。固定使用 Flutter 3.38.9；更新 SDK 后需重新验证。
+
+| 平台 | 产物 | 说明 |
+|---|---|---|
+| Android | 3 个 ABI 的 APK | 测试签名；不保证跨 CI 版本覆盖安装 |
+| Windows | Setup.exe、portable.zip | x64 Inno Setup 安装包及便携版，未签名 |
+| macOS | DMG | CI 主机架构；未 notarize |
+| Linux | tar.gz | x64，需系统 libmpv、GTK 等运行库 |
+| iOS | unsigned-app.zip | 未签名 Runner.app，不能直接安装，非 IPA |
+| Web | ZIP | 解压后部署到 HTTP(S) 静态服务器 |
+
+正式发行前应配置 Android 稳定发布密钥、Windows 代码签名、Apple Developer 证书及 provisioning profile / notarization，并核查依赖许可证。密钥只能保存在 GitHub Secrets 或其他安全密钥存储中。当前不生成已签名 iOS IPA 或商店级发布文件。
+
+本地仅生成一个平台的 runner：`python scripts/bootstrap.py --platform windows`（可替换为 android、macos、linux、ios、web）。
