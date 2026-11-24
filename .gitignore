@@ -13,3 +13,10 @@ android/.gradle/
 key.properties
 **/ephemeral/
 **/Pods/
+
+*.p12
+*.pfx
+*.pem
+*.pkcs12
+*.base64
+upgrade-fixture/

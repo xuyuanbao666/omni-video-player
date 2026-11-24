@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2
+
+- Require a persistent owner-managed Android release signing key and pinned certificate SHA-256; no temporary signing fallback in release CI.
+- Verify in-place universal APK upgrades using adb install -r with increasing versionCode, retained first-install timestamp and launch smoke test.
+- First migration from old temporary certificates may require one uninstall; the initial upgrade fixture is re-signed for test only.
+- Replace the default Flutter Android launcher with Omni adaptive and legacy icons.
+
 ## 0.4.1
 
 - Fix narrow portrait player layout; use full-width 16:9 canvas and useful empty state.

@@ -35,6 +35,21 @@ if 'android' in selected:
     text = manifest.read_text(encoding='utf-8')
     if 'android:label="omni_player"' in text:
         manifest.write_text(text.replace('android:label="omni_player"', 'android:label="Omni Player"'), encoding='utf-8')
+    # Install the Omni launcher icon, including a pre-26 fallback and adaptive icon.
+    res = root / 'android/app/src/main/res'
+    icon_source = root / 'packaging/android'
+    for source, destination in (
+        ('omni_launcher.xml', 'mipmap-anydpi/omni_launcher.xml'),
+        ('omni_launcher_foreground.xml', 'drawable/omni_launcher_foreground.xml'),
+        ('omni_launcher_adaptive.xml', 'mipmap-anydpi-v26/omni_launcher.xml'),
+        ('omni_launcher_colors.xml', 'values/omni_launcher_colors.xml'),
+    ):
+        out = res / destination
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(icon_source / source, out)
+    text = manifest.read_text(encoding='utf-8')
+    text = text.replace('@mipmap/ic_launcher', '@mipmap/omni_launcher')
+    manifest.write_text(text, encoding='utf-8')
     # Install the Android PiP bridge into the generated launcher activity.
     activity = next((root / 'android/app/src/main/kotlin').rglob('MainActivity.kt'))
     package_line = activity.read_text(encoding='utf-8').splitlines()[0]
