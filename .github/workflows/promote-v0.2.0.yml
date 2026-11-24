@@ -1,0 +1,95 @@
+name: Promote verified v0.2.0 release
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-v0.2.0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: omni-v0.2.0-promotion
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_TAG: preview-v0.2.0-2-1
+      RELEASE_TAG: v0.2.0
+      TESTED_SHA: afcb38c8fce67879f75e2fa1e579859a610cbc71
+      BUILD_RUN: '45344293839'
+    steps:
+      - name: Verify tested commit and existing preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" --jq .conclusion)" = success
+          test "$(gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN" --jq .head_sha)" = "$TESTED_SHA"
+          test "$(gh api "repos/$GH_REPO/git/ref/tags/$SOURCE_TAG" --jq .object.sha)" = "$TESTED_SHA"
+          test "$(gh release view "$SOURCE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$SOURCE_TAG" --json isPrerelease --jq .isPrerelease)" = true
+          test "$(gh release view "$SOURCE_TAG" --json assets --jq '.assets | length')" = 10
+      - name: Download and verify original release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$SOURCE_TAG" --dir dist
+          cd dist
+          expected=(
+            OmniPlayer-Android-arm64-v8a-test.apk
+            OmniPlayer-Android-armeabi-v7a-test.apk
+            OmniPlayer-Android-x86_64-test.apk
+            OmniPlayer-Windows-x64-Setup.exe
+            OmniPlayer-Windows-x64-portable.zip
+            OmniPlayer-macOS-arm64-unnotarized.dmg
+            OmniPlayer-Linux-x64.tar.gz
+            OmniPlayer-iOS-unsigned-app.zip
+            OmniPlayer-Web.zip
+          )
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 10
+          test "$(wc -l < SHA256SUMS.txt)" -eq 9
+          for name in "${expected[@]}"; do
+            test -s "$name"
+            test "$(awk -v n="$name" '$2 == n { count++ } END { print count+0 }' SHA256SUMS.txt)" -eq 1
+          done
+          sha256sum --check --strict SHA256SUMS.txt
+      - name: Publish v0.2.0 without replacing original assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease,assets >/dev/null 2>&1; then
+            echo 'Release already exists; no overwrite performed.'
+            exit 0
+          fi
+          cat > notes.md <<'EOF'
+          ## Omni Video Player v0.2.0
+          
+          Windows、Android、macOS、Linux、iOS、Web 六平台源码构建和自动化测试均通过。本版本沿用已验证预览版的原始二进制文件，并核对 SHA-256，未重新编译。
+          
+          ### 更新内容
+          - 内嵌字幕轨道及外部 UTF-8 字幕加载
+          - 本地播放历史、断点续播及隐私设置
+          - 视频帧 PNG 截图，支持保存或分享
+          - 原生硬件加速设置，重启生效
+          - 受支持 Android 设备的系统画中画，以及桌面应用内精简模式
+          
+          ### 下载与安装
+          - Android：按设备架构选择 APK，现代手机通常为 arm64-v8a。测试签名可能导致无法覆盖旧版本。
+          - Windows：x64 Setup.exe 安装版或 portable.zip 便携版。未进行代码签名。
+          - macOS：Apple Silicon DMG，未公证。
+          - Linux：x64 tar.gz，需系统 libmpv、GTK 等运行库。
+          - iOS：未签名 Runner.app ZIP，不是可直接安装的 IPA。
+          - Web：解压并部署到 HTTP(S) 静态服务器。
+          
+          ### 发行范围
+          这是 GitHub 正式版本记录，并非应用商店审核或签名认证。实际功能兼容性仍需真机验证，第三方许可与编解码器分发要求仍需审核。下载后可通过 SHA256SUMS.txt 校验文件。
+          EOF
+          gh release create "$RELEASE_TAG" dist/* --target "$TESTED_SHA" --title "Omni Video Player v0.2.0" --notes-file notes.md --latest
