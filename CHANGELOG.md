@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Minimal floating playback dock, auto-hide, compact advanced controls, mobile navigation and desktop split view.
+- New in-app Omni mark and reduced-motion-aware entrance animation.
+- Local played-video preview cache, grid/list media library, progress and optional video-derived accent colors.
+- Categorized settings, bounded local thumbnail cache and privacy controls.
+
 ## 0.3.1
 
 - Frosted glass surfaces, app-local aurora gradients and a rounded playback dock.

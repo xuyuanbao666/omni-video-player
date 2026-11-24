@@ -14,9 +14,9 @@ void main() {
   test('only accepts stable GitHub release responses', () async {
     final client = MockClient((request) async {
       expect(request.url.host,'api.github.com');
-      return http.Response('{"tag_name":"v0.4.0","draft":false,"prerelease":false}',200);
+      return http.Response('{"tag_name":"v0.5.0","draft":false,"prerelease":false}',200);
     });
-    expect(await checkForUpdate(client: client),'v0.4.0');
+    expect(await checkForUpdate(client: client),'v0.5.0');
     final preview = MockClient((_) async => http.Response('{"tag_name":"v9.0.0","draft":false,"prerelease":true}',200));
     await expectLater(checkForUpdate(client: preview),throwsFormatException);
   });
