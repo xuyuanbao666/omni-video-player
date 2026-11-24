@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-const currentVersion = '0.3.0';
+const currentVersion = '0.3.1';
 const releasesPage = 'https://github.com/xuyuanbao666/omni-video-player/releases';
 final _version = RegExp(r'^v?([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})$');
 

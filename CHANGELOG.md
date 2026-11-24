@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Frosted glass surfaces, app-local aurora gradients and a rounded playback dock.
+- Light and dark variants with a persisted glass appearance toggle.
+- Preserve existing media playback, library and localization features.
+- Feature branches run six-platform artifact builds without auto-publishing.
+
 ## 0.3.0
 
 - Professional responsive player layout and light/dark themes, Chinese/English UI.

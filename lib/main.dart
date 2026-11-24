@@ -12,6 +12,7 @@ import 'playback_history.dart';
 import 'media_library.dart';
 import 'folder_scan.dart';
 import 'update_check.dart';
+import 'glass_ui.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -33,6 +34,7 @@ class OmniPlayerApp extends StatefulWidget {
 class _OmniPlayerAppState extends State<OmniPlayerApp> {
   late bool english = preferences.getBool('english') ?? false;
   late bool light = preferences.getBool('lightTheme') ?? false;
+  late bool glass = preferences.getBool('glassTheme') ?? true;
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Omni Player', debugShowCheckedModeBanner: false,
@@ -40,21 +42,26 @@ class _OmniPlayerAppState extends State<OmniPlayerApp> {
     supportedLocales: const [Locale('en'), Locale('zh')],
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
     theme: ThemeData(useMaterial3: true, brightness: light ? Brightness.light : Brightness.dark,
-      colorSchemeSeed: const Color(0xff38bca0),
-      scaffoldBackgroundColor: light ? const Color(0xffedf2f5) : const Color(0xff10141b)),
-    home: PlayerScreen(english: english, light: light,
-      onAppearance: (e, l) {
-        setState(() { english = e; light = l; });
+      colorSchemeSeed: glass ? const Color(0xff729cde) : const Color(0xff38bca0),
+      scaffoldBackgroundColor: glass ? (light ? const Color(0xffe4eeff) : const Color(0xff0b1429)) : (light ? const Color(0xffedf2f5) : const Color(0xff10141b)),
+      appBarTheme: const AppBarTheme(elevation: 0, scrolledUnderElevation: 0, surfaceTintColor: Colors.transparent),
+      dialogTheme: DialogThemeData(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28))),
+      inputDecorationTheme: InputDecorationTheme(filled: true, fillColor: light ? Colors.white54 : const Color(0x25232f50), border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
+    ),
+    home: PlayerScreen(english: english, light: light, glass: glass,
+      onAppearance: (e, l, g) {
+        setState(() { english = e; light = l; glass = g; });
         unawaited(preferences.setBool('english', e));
         unawaited(preferences.setBool('lightTheme', l));
+        unawaited(preferences.setBool('glassTheme', g));
       }),
   );
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.english, required this.light, required this.onAppearance});
-  final bool english, light;
-  final void Function(bool, bool) onAppearance;
+  const PlayerScreen({super.key, required this.english, required this.light, required this.glass, required this.onAppearance});
+  final bool english, light, glass;
+  final void Function(bool, bool, bool) onAppearance;
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
@@ -421,13 +428,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Future<void> showSettings() async {
     if (busy) return;
     var remember = rememberHistory, resume = resumePlayback, hardware = hardwareAcceleration;
-    var english = widget.english, light = widget.light, updates = autoUpdate;
+    var english = widget.english, light = widget.light, updates = autoUpdate, glass = widget.glass;
     final saved = await showDialog<bool>(context: context, builder: (context) =>
       StatefulBuilder(builder: (context, refresh) => AlertDialog(
         title: Text(tr('播放设置', 'Playback settings')),
         content: SizedBox(width: 420, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
           SwitchListTile(title: Text(tr('English / 中文', 'English / 中文')), value: english, onChanged: (v) => refresh(() => english = v)),
           SwitchListTile(title: Text(tr('浅色主题', 'Light theme')), value: light, onChanged: (v) => refresh(() => light = v)),
+          SwitchListTile(title: Text(tr('磨砂玻璃风格','Frosted glass')), subtitle: Text(tr('关闭可降低界面渲染开销','Disable to reduce UI rendering cost')), value: glass, onChanged: (v) => refresh(() => glass = v)),
           SwitchListTile(title: Text(tr('启动时检查更新', 'Check for updates at startup')), subtitle: Text(tr('连接 GitHub；不会自动安装', 'Contacts GitHub; never auto-installs')), value: updates, onChanged: (v) => refresh(() => updates = v)),
           SwitchListTile(title: Text(tr('保存播放历史', 'Save playback history')), subtitle: Text(tr('仅保存到本设备；关闭会清除记录', 'Stored on this device; disabling clears history')),
             value: remember, onChanged: (v) => refresh(() => remember = v)),
@@ -448,7 +456,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       await preferences.setBool('autoUpdate', updates);
       if (!mounted) return;
       setState(() { rememberHistory = remember; resumePlayback = resume; hardwareAcceleration = hardware; autoUpdate = updates; });
-      widget.onAppearance(english, light);
+      widget.onAppearance(english, light, glass);
       if (!remember) { history.clear(); flushHistory(); }
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('设置已保存，硬件加速将在下次启动时生效')));
     });
@@ -659,13 +667,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }));
 
   Widget videoPane() => Column(children: [
-    Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(compact || inPip ? 0 : 14),
+    Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(compact || inPip ? 0 : 24),
       child: ColoredBox(color: Colors.black, child: Stack(alignment: Alignment.center, children: [
         Positioned.fill(child: Video(controller: controller, fit: videoFit, controls: NoVideoControls)),
         if (dim > 0) Positioned.fill(child: IgnorePointer(child: ColoredBox(color: Colors.black.withValues(alpha: dim)))),
         if (hasMedia && !inPip) Positioned.fill(child: touchSurface()),
         if (!hasMedia) IgnorePointer(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.play_circle_outline_rounded, size: 72, color: Color(0xff6ce5c5)),
+          GlassPanel(enabled: widget.glass, blur: false, radius: 32, padding: const EdgeInsets.all(16), child: const Icon(Icons.play_circle_outline_rounded, size: 54, color: Color(0xff9fcaff))),
           const SizedBox(height: 12), const Text('Omni Player', style: TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w700)),
           Text(tr('打开媒体，开始播放','Open media to begin'), style: const TextStyle(color: Colors.white54)),
         ])),
@@ -682,8 +690,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       Expanded(child: Text(error!, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: Theme.of(context).colorScheme.error))),
       IconButton(onPressed: () => setState(() => error = null), icon: const Icon(Icons.close)),
     ])),
-    if (!inPip) progress(),
-    if (!inPip) SizedBox(height: 58, child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
+    if (!inPip) Padding(padding: const EdgeInsets.only(top: 8), child: GlassPanel(enabled: widget.glass && !compact, radius: 24, padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3), child: Column(mainAxisSize: MainAxisSize.min, children: [
+      progress(),
+      SizedBox(height: 54, child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: [
       IconButton(tooltip: tr('上一项','Previous'), onPressed: busy || !hasMedia ? null : () => run(player.previous), icon: const Icon(Icons.skip_previous)),
       IconButton(tooltip: tr('后退10秒','Back 10 seconds'), onPressed: busy || !hasMedia ? null : () => seekBy(-10), icon: const Icon(Icons.replay_10)),
       IconButton.filled(tooltip: playing ? tr('暂停','Pause') : tr('播放','Play'), onPressed: busy || !hasMedia ? null : () => run(player.playOrPause), icon: Icon(playing ? Icons.pause : Icons.play_arrow)),
@@ -704,9 +713,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       IconButton(tooltip: tr('循环模式','Repeat'), onPressed: busy ? null : () => run(() => player.setPlaylistMode(mode == PlaylistMode.none ? PlaylistMode.loop : mode == PlaylistMode.loop ? PlaylistMode.single : PlaylistMode.none)), icon: Icon(mode == PlaylistMode.single ? Icons.repeat_one : Icons.repeat, color: mode == PlaylistMode.none ? null : Theme.of(context).colorScheme.primary)),
       IconButton(tooltip: tr('沉浸模式','Immersive mode'), onPressed: toggleImmersive, icon: Icon(compact ? Icons.fullscreen_exit : Icons.fullscreen)),
     ]))),
+    ]))),
   ]);
 
-  Widget browserPane() => Card(elevation: 0, clipBehavior: Clip.antiAlias, child: Column(children: [
+  Widget browserPane() => GlassPanel(enabled: widget.glass, radius: 26, child: Column(children: [
     Padding(padding: const EdgeInsets.all(10), child: SegmentedButton<bool>(
       segments: [ButtonSegment(value: false, icon: const Icon(Icons.queue_music), label: Text(tr('队列','Queue'))), ButtonSegment(value: true, icon: const Icon(Icons.video_library_outlined), label: Text(tr('媒体库','Library')))],
       selected: {libraryTab}, onSelectionChanged: (v) => setState(() => libraryTab = v.first),
@@ -716,8 +726,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) => Focus(focusNode: keyboardFocus, autofocus: true, onKeyEvent: handleKey, child: Scaffold(
-    appBar: inPip || compact ? null : AppBar(title: Row(children: [
-      const Icon(Icons.play_circle_fill, color: Color(0xff38bca0)), const SizedBox(width: 8),
+    appBar: inPip || compact ? null : AppBar(backgroundColor: Colors.transparent, title: Row(children: [
+      GlassPanel(enabled: widget.glass, blur: false, radius: 13, padding: const EdgeInsets.all(7), child: Icon(Icons.play_circle_fill, color: Theme.of(context).colorScheme.primary)), const SizedBox(width: 10),
       const Flexible(child: Text('Omni Player', overflow: TextOverflow.ellipsis)),
     ]), actions: [
       IconButton(tooltip: tr('播放历史','History'), onPressed: busy ? null : showHistory, icon: const Icon(Icons.history)),
@@ -731,25 +741,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         const PopupMenuItem(enabled: false, child: Text('v$currentVersion')),
       ]),
     ]),
-    body: SafeArea(child: Column(children: [
-      if (!inPip && !compact) Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: Row(children: [
+    body: GlassBackdrop(enabled: widget.glass && !compact && !inPip, child: SafeArea(child: Column(children: [
+      if (!inPip && !compact) Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: GlassPanel(enabled: widget.glass, radius: 22, padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), child: Row(children: [
         FilledButton.tonalIcon(onPressed: busy ? null : pickFiles, icon: const Icon(Icons.folder_open), label: Text(tr('文件','Files'))),
         const SizedBox(width: 8),
         OutlinedButton.icon(onPressed: busy ? null : pickUrl, icon: const Icon(Icons.link), label: Text(tr('网址','URL'))),
         const Spacer(),
         if (availableUpdate != null) IconButton(tooltip: tr('新版本 $availableUpdate','New version $availableUpdate'), onPressed: openReleasePage, icon: const Icon(Icons.system_update_alt)),
-      ])),
+      ]))),
       if (busy && !inPip && !compact) const LinearProgressIndicator(),
       Expanded(child: LayoutBuilder(builder: (context, constraints) {
         if (inPip || compact) return videoPane();
         if (constraints.maxWidth >= 880) return Padding(padding: const EdgeInsets.all(12), child: Row(children: [
           Expanded(child: videoPane()), const SizedBox(width: 12), SizedBox(width: 330, child: browserPane()),
         ]));
-        if (constraints.maxHeight < 380) return videoPane();
+        if (constraints.maxHeight < 420) return Padding(padding: const EdgeInsets.all(8), child: videoPane());
         return Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: Column(children: [
-          Expanded(flex: 3, child: videoPane()), Expanded(flex: 2, child: browserPane()),
+          Expanded(flex: 3, child: videoPane()), const SizedBox(height: 8), Expanded(flex: 2, child: browserPane()),
         ]));
       })),
-    ])),
+    ]))),
   ));
 }
