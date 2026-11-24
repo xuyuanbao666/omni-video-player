@@ -15,6 +15,7 @@ import 'update_check.dart';
 import 'glass_ui.dart';
 import 'minimal_ui.dart';
 import 'preview_cache.dart';
+import 'player_layout.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -113,9 +114,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   late final PreviewCache previews;
   String? attemptedPreview;
   Future<void> previewWrite = Future.value();
-  BoxFit videoFit = BoxFit.contain;
+  final videoFitNotifier = ValueNotifier<BoxFit>(BoxFit.contain);
+  BoxFit get videoFit => videoFitNotifier.value;
+  set videoFit(BoxFit value) => videoFitNotifier.value = value;
+  late final Widget videoTexture;
+  ScreenDirection screenDirection = ScreenDirection.automatic;
+  bool orientationChanging = false;
+  bool scrubbing = false;
+  bool seeking = false;
+  bool showBuffering = false;
+  Timer? bufferingTimer;
   double dim = 0;
-  double? seekPreview;
   double? gestureTarget;
   double gestureRate = 1;
   Future<void>? rateGesture;
@@ -146,6 +155,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     dynamicAccent = preferences.getBool('dynamicAccent') ?? true;
     autoHide = preferences.getBool('autoHide') ?? true;
     gridLibrary = preferences.getBool('gridLibrary') ?? true;
+    final storedDirection = preferences.getString('screenDirection');
+    screenDirection = ScreenDirection.values.firstWhere((v) => v.name == storedDirection, orElse: () => ScreenDirection.automatic);
+    if (mobile) WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) unawaited(applyOrientation()); });
     autoUpdate = preferences.getBool('autoUpdate') ?? true;
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted && autoUpdate) unawaited(checkUpdates(silent: true)); });
     rememberHistory = preferences.getBool('rememberHistory') ?? true;
@@ -156,6 +168,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       enableHardwareAcceleration: hardwareAcceleration,
       hwdec: hardwareAcceleration ? null : 'no',
     ));
+    videoTexture = RepaintBoundary(key: GlobalKey(), child: ValueListenableBuilder<BoxFit>(
+      valueListenable: videoFitNotifier, builder: (_, fit, __) => Video(controller: controller, fit: fit, controls: NoVideoControls)));
     historyTimer = Timer.periodic(const Duration(seconds: 5), (_) { savePosition(); if (foreground) unawaited(capturePreview()); });
     if (android) {
       pipChannel.setMethodCallHandler((call) async {
@@ -171,12 +185,21 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       setState(() => playlist = v);
       if (before != currentSource) {
         attemptedPreview = null;
+        scrubbing = false;
         final key = currentSource;
         widget.onAccent(dynamicAccent && key != null ? previews[key]?.accent : null);
         revealDock();
       }
     }));
-    subscriptions.add(player.stream.buffering.listen((v) { if (mounted) setState(() => buffering = v); }));
+    subscriptions.add(player.stream.buffering.listen((v) {
+      if (!mounted) return;
+      buffering = v;
+      bufferingTimer?.cancel();
+      if (!v && showBuffering) setState(() => showBuffering = false);
+      if (v) bufferingTimer = Timer(const Duration(milliseconds: 650), () {
+        if (mounted && buffering && !scrubbing && !seeking) setState(() => showBuffering = true);
+      });
+    }));
     subscriptions.add(player.stream.playing.listen((v) { if (mounted) { setState(() => playing = v); if (!v) savePosition(); revealDock(); } }));
     subscriptions.add(player.stream.rate.listen((v) { if (mounted) setState(() => rate = v); }));
     subscriptions.add(player.stream.volume.listen((v) { if (mounted) setState(() => volume = v); }));
@@ -190,10 +213,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     dockTimer?.cancel();
     if (!mounted) return;
     if (!dockVisible) setState(() => dockVisible = true);
-    if (!autoHide || !playing || dockHovered || busy || !foreground ||
+    if (!autoHide || !playing || dockHovered || busy || scrubbing || seeking || !foreground ||
         MediaQuery.maybeOf(context)?.accessibleNavigation == true) return;
     dockTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && playing && !busy && !dockHovered && seekPreview == null && foreground) {
+      if (mounted && playing && !busy && !dockHovered && !scrubbing && !seeking && foreground) {
         setState(() => dockVisible = false);
       }
     });
@@ -208,7 +231,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> capturePreview() async {
     final source = currentSource;
-    if (!mounted || !foreground || !thumbnailsEnabled || previewBusy || busy || buffering ||
+    if (!mounted || !foreground || !thumbnailsEnabled || previewBusy || busy || buffering || scrubbing || seeking ||
         inPip || !playing || source == null || !canCachePreview(source) ||
         !library.items.any((v) => v.source == source) || previews[source] != null ||
         attemptedPreview == source || player.state.position.inSeconds < 3) return;
@@ -309,18 +332,35 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (selected != null && mounted) await run(() => player.setAudioTrack(selected));
   }
 
-  Future<void> seekBy(int seconds) => run(() async {
+  Future<void> seekBy(int seconds) async {
     final state = player.state;
-    if (state.duration.inMilliseconds <= 0) return;
-    final target = (state.position.inMilliseconds + seconds * 1000).clamp(0, state.duration.inMilliseconds).toInt();
-    await player.seek(Duration(milliseconds: target));
-  });
+    await seekTo((state.position.inMilliseconds + seconds * 1000).toDouble());
+  }
 
-  Future<void> seekTo(double ms) => run(() async {
+  void setScrubbing(bool value) {
+    scrubbing = value;
+    if (value) {
+      dockTimer?.cancel();
+      if (showBuffering) setState(() => showBuffering = false);
+    } else { revealDock(); }
+  }
+
+  Future<void> seekTo(double ms) async {
+    if (!mounted || !hasMedia || busy || seeking) return;
     final duration = player.state.duration.inMilliseconds;
     if (duration <= 0) return;
-    await player.seek(Duration(milliseconds: ms.clamp(0, duration).round()));
-  });
+    seeking = true;
+    dockTimer?.cancel();
+    if (showBuffering) setState(() => showBuffering = false);
+    try {
+      await player.seek(Duration(milliseconds: ms.clamp(0, duration).round()));
+    } catch (_) {
+      if (mounted) setState(() => error = tr('跳转失败，请重试。','Seek failed. Try again.'));
+    } finally {
+      seeking = false;
+      if (mounted) revealDock();
+    }
+  }
 
   Future<void> changeVolume(double value) => run(() async {
     final v = value.clamp(0.0, 100.0).toDouble();
@@ -330,13 +370,44 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> toggleMute() => changeVolume(volume == 0 ? lastVolume : 0);
 
-  Future<void> toggleImmersive() async {
-    if (!mounted || inPip) return;
-    setState(() { immersive = !immersive; compact = immersive; });
-    if (mobile) {
-      try { await SystemChrome.setEnabledSystemUIMode(immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge); } catch (_) {}
-    }
+  Future<void> applyOrientation() async {
+    if (!mobile) return;
+    try {
+      await SystemChrome.setPreferredOrientations(orientationsFor(screenDirection, fullscreen: immersive));
+    } catch (_) { /* Some OS/window modes override orientation requests. */ }
   }
+
+  Future<void> chooseDirection(ScreenDirection direction) async {
+    if (!mobile || !mounted || orientationChanging || inPip) return;
+    setState(() => screenDirection = direction);
+    unawaited(preferences.setString('screenDirection', direction.name));
+    await applyOrientation();
+  }
+
+  Future<void> toggleImmersive() async {
+    if (!mounted || inPip || orientationChanging) return;
+    orientationChanging = true;
+    setState(() { immersive = !immersive; compact = immersive; mobilePage = 0; });
+    try {
+      if (mobile) {
+        await applyOrientation();
+        await SystemChrome.setEnabledSystemUIMode(immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
+      }
+    } catch (_) { /* OS may enforce edge-to-edge mode. */ }
+    finally { orientationChanging = false; if (mounted) revealDock(); }
+  }
+
+  Widget directionMenu({bool onVideo = false}) => PopupMenuButton<ScreenDirection>(
+    tooltip: tr('屏幕方向','Screen orientation'),
+    initialValue: screenDirection,
+    onSelected: (direction) => unawaited(chooseDirection(direction)),
+    icon: Icon(Icons.screen_rotation_outlined, color: onVideo ? Colors.white : null),
+    itemBuilder: (_) => [
+      PopupMenuItem(value: ScreenDirection.automatic, child: Text(tr('自动旋转','Auto rotate'))),
+      PopupMenuItem(value: ScreenDirection.landscape, child: Text(tr('锁定横屏','Landscape'))),
+      PopupMenuItem(value: ScreenDirection.portrait, child: Text(tr('锁定竖屏','Portrait'))),
+    ],
+  );
 
   void hint(String text) {
     gestureTimer?.cancel();
@@ -355,6 +426,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     onDoubleTap: () { if (hasMedia) unawaited(seekBy(gestureSide * 10)); },
     onHorizontalDragStart: (_) {
       if (!hasMedia || busy || player.state.duration.inMilliseconds <= 0) return;
+      setScrubbing(true);
       gestureTarget = player.state.position.inMilliseconds.toDouble();
     },
     onHorizontalDragUpdate: (d) {
@@ -367,9 +439,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     onHorizontalDragEnd: (_) {
       final target = gestureTarget;
       gestureTarget = null;
-      if (target != null) unawaited(seekTo(target));
+      if (target != null) unawaited(seekTo(target).whenComplete(() { if (mounted) setScrubbing(false); }));
+      else setScrubbing(false);
     },
-    onHorizontalDragCancel: () { gestureTarget = null; },
+    onHorizontalDragCancel: () { gestureTarget = null; setScrubbing(false); },
     onVerticalDragStart: (d) {
       gestureSide = d.localPosition.dx < size.maxWidth / 2 ? -1 : 1;
       gestureTarget = gestureSide == -1 ? dim : volume;
@@ -702,8 +775,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     historyTimer.cancel();
     dockTimer?.cancel();
     gestureTimer?.cancel();
+    bufferingTimer?.cancel();
+    videoFitNotifier.dispose();
     keyboardFocus.dispose();
-    if (mobile && immersive) unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    if (mobile) {
+      unawaited(SystemChrome.setPreferredOrientations(const []));
+      if (immersive) unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    }
     WidgetsBinding.instance.removeObserver(this);
     if (android) pipChannel.setMethodCallHandler(null);
     for (final sub in subscriptions) { unawaited(sub.cancel()); }
@@ -800,18 +878,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     ]);
   }
 
-  Widget progress() => StreamBuilder<Duration>(stream: player.stream.duration, initialData: player.state.duration, builder: (context, duration) =>
-    StreamBuilder<Duration>(stream: player.stream.position, initialData: player.state.position, builder: (context, position) {
-      final max = (duration.data ?? Duration.zero).inMilliseconds.toDouble();
-      final current = (seekPreview ?? (position.data ?? Duration.zero).inMilliseconds.toDouble()).clamp(0.0, max > 0 ? max : 0.0).toDouble();
-      return Column(mainAxisSize: MainAxisSize.min, children: [
-        Slider(value: current, max: max > 0 ? max : 1, onChanged: busy || max <= 0 ? null : (v) => setState(() => seekPreview = v),
-          onChangeEnd: (v) { setState(() => seekPreview = null); unawaited(seekTo(v)); }),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(formatTime(current.round())), Text(max > 0 ? formatTime(max.round()) : '--:--'),
-        ])),
-      ]);
-    }));
+  Widget progress() => PlaybackScrubber(
+    key: ValueKey(currentSource),
+    position: player.stream.position, duration: player.stream.duration,
+    initialPosition: player.state.position, initialDuration: player.state.duration,
+    enabled: !busy && hasMedia, onScrubbing: setScrubbing, onSeek: seekTo, formatTime: formatTime);
 
   Future<void> playbackOptions() async {
     revealDock();
@@ -865,37 +936,93 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           ]))),
     ));
 
-  Widget videoPane() => Column(children: [
-    Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(compact || inPip ? 0 : 28),
+  Widget emptySurface() => DecoratedBox(
+    decoration: BoxDecoration(gradient: LinearGradient(
+      begin: Alignment.topLeft, end: Alignment.bottomRight,
+      colors: widget.light ? const [Color(0xfff5f8ff),Color(0xffdce7f5)]
+        : const [Color(0xff202b40),Color(0xff141c2a)])),
+    child: Center(child: Padding(padding: const EdgeInsets.all(12), child: FittedBox(fit: BoxFit.scaleDown,
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const OmniMark(size: 48),
+        const SizedBox(height: 10),
+        Text(tr('播放你喜欢的视频','Play what you love'), style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(tr('本地文件 · 网络媒体','Local files · Network media'), style: Theme.of(context).textTheme.bodySmall),
+      ]),
+    ))),
+  );
+
+  Widget playerFooter() {
+    if (hasMedia) return Padding(padding: const EdgeInsets.fromLTRB(4,12,4,0),child:Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch, children:[
+        Row(children:[
+          Expanded(child:Text(nowPlaying,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:16,fontWeight:FontWeight.w600))),
+          Text(playing?tr('播放中','Playing'):tr('已暂停','Paused'),style:TextStyle(color:Theme.of(context).colorScheme.primary)),
+        ]),
+        if (error != null) Row(children:[
+          Expanded(child:Text(error!,maxLines:2,overflow:TextOverflow.ellipsis,style:TextStyle(color:Theme.of(context).colorScheme.error))),
+          IconButton(onPressed:()=>setState(()=>error=null),icon:const Icon(Icons.close)),
+        ]),
+        if (MediaQuery.sizeOf(context).width < 700 && MediaQuery.sizeOf(context).height > MediaQuery.sizeOf(context).width)
+          Padding(padding: const EdgeInsets.only(top: 12), child: GlassPanel(enabled: widget.glass, blur: false, radius: 20,
+            child: ListTile(leading: const Icon(Icons.queue_music),title:Text(tr('播放队列','Play queue')),
+              subtitle:Text('${playlist.medias.length} ${tr('项媒体','items')}'),trailing:const Icon(Icons.chevron_right),onTap:()=>setState(()=>mobilePage=2)))),
+      ]));
+    final recent = history.entries.take(3).toList();
+    return Padding(padding: const EdgeInsets.fromLTRB(2,18,2,12),child:Column(crossAxisAlignment: CrossAxisAlignment.stretch,children:[
+      Row(children:[
+        Expanded(child:FilledButton.icon(onPressed:busy?null:pickFiles,icon:const Icon(Icons.folder_open_rounded),label:Text(tr('打开文件','Open files')))),
+        const SizedBox(width:10),
+        Expanded(child:OutlinedButton.icon(onPressed:busy?null:pickUrl,icon:const Icon(Icons.link_rounded),label:Text(tr('打开链接','Open URL')))),
+      ]),
+      const SizedBox(height:24),
+      Row(children:[
+        Expanded(child:Text(tr('最近播放','Recently played'),style:Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight:FontWeight.w700))),
+        if(recent.isNotEmpty) TextButton(onPressed:busy?null:showHistory,child:Text(tr('全部','View all'))),
+      ]),
+      if(recent.isEmpty) Padding(padding:const EdgeInsets.symmetric(vertical:16),child:Text(tr('播放视频后，会在这里显示记录。','Your recent videos will appear here.'),style:Theme.of(context).textTheme.bodySmall)),
+      for(final entry in recent) ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal:4),
+        leading:SizedBox(width:64,height:40,child:previewImage(LibraryItem(entry.source,entry.title))),
+        title:Text(entry.title,maxLines:1,overflow:TextOverflow.ellipsis),
+        subtitle:Text('${formatTime(entry.positionMs)} / ${formatTime(entry.durationMs)}'),
+        trailing:const Icon(Icons.play_circle_outline),
+        onTap:busy?null:()=>run(()async{
+          final media=mediaFor(entry.source);
+          labels[media.uri]=entry.title;
+          await player.open(media);
+          if(mounted)setState(()=>mobilePage=0);
+        })),
+      if(error!=null) Text(error!,style:TextStyle(color:Theme.of(context).colorScheme.error)),
+    ]));
+  }
+
+  Widget videoPane() => PlayerStage(
+    fill: compact || inPip,
+    empty: !hasMedia,
+    footer: playerFooter(),
+    surface: ClipRRect(borderRadius: BorderRadius.circular(compact || inPip ? 0 : 22),
       child: ColoredBox(color: Colors.black, child: MouseRegion(onHover: (_) => revealDock(),
-        child: Listener(onPointerDown: (_) => revealDock(), child: Stack(alignment: Alignment.center, children: [
-          Positioned.fill(child: Video(controller:controller,fit:videoFit,controls:NoVideoControls)),
-          if(dim>0) Positioned.fill(child:IgnorePointer(child:ColoredBox(color:Colors.black.withValues(alpha:dim)))),
+        child: Listener(onPointerDown: (_) => revealDock(), child: Stack(fit: StackFit.expand,alignment: Alignment.center, children: [
+          // This exact widget instance survives playback/slider state changes.
+          Positioned.fill(child: videoTexture),
+          if(!hasMedia) Positioned.fill(child:emptySurface()),
+          if(dim>0 && hasMedia) Positioned.fill(child:IgnorePointer(child:ColoredBox(color:Colors.black.withValues(alpha:dim)))),
           if(hasMedia && !inPip) Positioned.fill(child:touchSurface()),
-          if(!hasMedia) IgnorePointer(child:Column(mainAxisSize:MainAxisSize.min,children:[
-            const OmniMark(size:60,animate:true),
-            const SizedBox(height:12),
-            const Text('Omni Player',style:TextStyle(color:Colors.white,fontSize:22,fontWeight:FontWeight.w600)),
-            Text(tr('打开媒体，开始播放','Open media to begin'),style:const TextStyle(color:Colors.white70)),
+          if(showBuffering && hasMedia && !scrubbing && !seeking) const Center(child:IgnorePointer(child:CircularProgressIndicator())),
+          if(gestureMessage!=null&&!inPip) Center(child:IgnorePointer(child:DecoratedBox(decoration:BoxDecoration(color:Colors.black87,borderRadius:BorderRadius.circular(16)),child:Padding(padding:const EdgeInsets.all(14),child:Text(gestureMessage!,style:const TextStyle(color:Colors.white)))))),
+          if(!inPip && (hasMedia || compact)) Positioned(top:6,right:6,child:Row(mainAxisSize:MainAxisSize.min,children:[
+            if(mobile && !compact) Material(color:const Color(0x990c1422),shape:const CircleBorder(),child:directionMenu(onVideo:true)),
+            const SizedBox(width:4),
+            IconButton.filledTonal(
+              tooltip:compact?tr('退出全屏','Exit fullscreen'):tr('全屏（手机横屏）','Fullscreen'),
+              onPressed:toggleImmersive,icon:Icon(compact?Icons.fullscreen_exit_rounded:Icons.fullscreen_rounded)),
           ])),
-          if(buffering && hasMedia) const IgnorePointer(child:CircularProgressIndicator()),
-          if(gestureMessage!=null&&!inPip) IgnorePointer(child:DecoratedBox(decoration:BoxDecoration(color:Colors.black87,borderRadius:BorderRadius.circular(16)),child:Padding(padding:const EdgeInsets.all(14),child:Text(gestureMessage!,style:const TextStyle(color:Colors.white))))),
-          if(!inPip) Positioned(top:8,right:8,child:IconButton.filledTonal(
-            tooltip:compact?tr('退出沉浸模式','Exit immersive mode'):tr('沉浸模式','Immersive mode'),
-            onPressed:toggleImmersive,icon:Icon(compact?Icons.fullscreen_exit_rounded:Icons.fullscreen_rounded))),
           if(!inPip && hasMedia) Positioned(bottom:8,left:0,right:0,child:Center(child:ConstrainedBox(constraints:const BoxConstraints(maxWidth:540),child:Padding(padding:const EdgeInsets.symmetric(horizontal:8),child:dock())))),
         ])),
       ),
-    ))),
-    if(!inPip&&!compact) Padding(padding:const EdgeInsets.fromLTRB(8,10,8,4),child:Row(children:[
-      Expanded(child:Text(nowPlaying,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:16,fontWeight:FontWeight.w600))),
-      Text(playing?tr('播放中','Playing'):tr('已暂停','Paused'),style:TextStyle(color:Theme.of(context).colorScheme.primary)),
-    ])),
-    if(!inPip&&!compact&&error!=null) Padding(padding:const EdgeInsets.all(4),child:Row(children:[
-      Expanded(child:Text(error!,maxLines:2,overflow:TextOverflow.ellipsis,style:TextStyle(color:Theme.of(context).colorScheme.error))),
-      IconButton(onPressed:()=>setState(()=>error=null),icon:const Icon(Icons.close)),
-    ])),
-  ]);
+    )),
+  );
 
   Widget browserPane() => GlassPanel(enabled:widget.glass,radius:24,child:Column(children:[
     Padding(padding:const EdgeInsets.all(10),child:SegmentedButton<bool>(
@@ -913,12 +1040,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   ])));
 
   @override
-  Widget build(BuildContext context) => Focus(focusNode:keyboardFocus,autofocus:true,onKeyEvent:handleKey,child:Scaffold(
+  Widget build(BuildContext context) => PopScope(canPop: !compact, onPopInvokedWithResult: (didPop, _) { if(!didPop && compact) unawaited(toggleImmersive()); }, child: Focus(focusNode:keyboardFocus,autofocus:true,onKeyEvent:handleKey,child:Scaffold(
     appBar:inPip||compact?null:AppBar(backgroundColor:Colors.transparent,title:Row(children:[
       const OmniMark(size:34),const SizedBox(width:10),const Flexible(child:Text('Omni',overflow:TextOverflow.ellipsis,style:TextStyle(fontWeight:FontWeight.w700))),
     ]),actions:[
       IconButton(tooltip:tr('打开文件','Open files'),onPressed:busy?null:pickFiles,icon:const Icon(Icons.add_rounded)),
       IconButton(tooltip:tr('打开网址','Open URL'),onPressed:busy?null:pickUrl,icon:const Icon(Icons.link_rounded)),
+      if(mobile) directionMenu(),
       PopupMenuButton<String>(tooltip:tr('更多','More'),onSelected:(value){
         if(value=='history') unawaited(showHistory());
         if(value=='settings') unawaited(showSettings());
@@ -939,7 +1067,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       return Column(children:[
         if(busy&&!minimal) const LinearProgressIndicator(),
         Expanded(child:Padding(padding:EdgeInsets.all(minimal?0:10),child:Row(children:[
-          Expanded(child:IndexedStack(index:wide||minimal?0:mobilePage,children:[
+          Expanded(child:IndexedStack(sizing:StackFit.expand,index:wide||minimal?0:mobilePage,children:[
             videoPane(),
             if(!wide&&!minimal) GlassPanel(enabled:widget.glass,child:libraryPane()) else const SizedBox.shrink(),
             if(!wide&&!minimal) GlassPanel(enabled:widget.glass,child:queue()) else const SizedBox.shrink(),
@@ -949,5 +1077,5 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         if(!wide&&!minimal) mobileNavigation(),
       ]);
     }))),
-  ));
+  )));
 }

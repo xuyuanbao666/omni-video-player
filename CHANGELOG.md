@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Fix narrow portrait player layout; use full-width 16:9 canvas and useful empty state.
+- Isolated scrubber with one seek on release, stable video texture and delayed buffering overlay.
+- Mobile orientation selection and landscape fullscreen with restore.
+- Build universal Android APK with signature and emulator install/start checks.
+
 ## 0.4.0
 
 - Minimal floating playback dock, auto-hide, compact advanced controls, mobile navigation and desktop split view.
