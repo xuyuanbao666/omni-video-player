@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 NAME = 'omni-smoke-video.mp4'
 OUTPUT = Path('android-smoke')
 PLAYING = ('暂停', 'Pause')
+PLAY = ('播放', 'Play')
 LOCK = ('锁定控件', 'Lock controls')
 UNLOCK = ('解除锁定', 'Unlock controls')
 EXIT_FULLSCREEN = ('退出全屏', 'Exit fullscreen')
@@ -20,7 +21,7 @@ def adb(*args, timeout=20):
     return subprocess.check_output(['adb', *args], timeout=timeout)
 
 
-def locate(names, seconds=35, optional=False):
+def locate(names, seconds=35, optional=False, clickable=False):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         remaining = max(1, deadline - time.monotonic())
@@ -32,6 +33,8 @@ def locate(names, seconds=35, optional=False):
             ))
             for node in root.iter('node'):
                 labels = node.get('text', '').splitlines() + node.get('content-desc', '').splitlines()
+                if clickable and node.get('clickable') != 'true':
+                    continue
                 if not any(name in labels for name in names):
                     continue
                 bounds = re.findall(r'\d+', node.get('bounds', ''))
@@ -52,8 +55,8 @@ def tap(point):
     adb('shell', 'input', 'tap', str(point[0]), str(point[1]))
 
 
-def click(*names, seconds=35, optional=False):
-    point = locate(names, seconds, optional)
+def click(*names, seconds=35, optional=False, clickable=False):
+    point = locate(names, seconds, optional, clickable)
     if point is not None:
         tap(point)
         return True
@@ -80,6 +83,22 @@ def capture(filename, landscape):
         time.sleep(0.5)
 
 
+def verify_video_frame(path, landscape):
+    # The synthetic clip is saturated. Sample its interior away from UI overlays.
+    area = 'crop=iw/3:ih/3' if landscape else 'crop=iw/3:ih/8:iw/3:ih/5'
+    pixels = subprocess.check_output([
+        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-i', str(path),
+        '-vf', f'{area},scale=16:16', '-frames:v', '1',
+        '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1',
+    ], timeout=15)
+    saturated = sum(
+        max(pixels[i:i + 3]) - min(pixels[i:i + 3]) > 65
+        for i in range(0, len(pixels), 3)
+    )
+    if saturated < 20:
+        raise RuntimeError(f'{path.name}: no visible synthetic video frame')
+
+
 def main(fixture):
     OUTPUT.mkdir(exist_ok=True)
     print('Waiting for the player home screen', flush=True)
@@ -100,11 +119,17 @@ def main(fixture):
         click('Downloads', '下载内容', '下载')
         click(NAME)
     click('Open', '打开', 'Select', '选择', seconds=5, optional=True)
-    locate(PLAYING, seconds=45)
+    locate((NAME,), seconds=35)
+    if locate(PLAYING, seconds=6, optional=True) is None:
+        click(*PLAY, seconds=20, clickable=True)
+    locate(PLAYING, seconds=35)
+    time.sleep(2)
     capture('portrait-playing.png', landscape=False)
+    verify_video_frame(OUTPUT / 'portrait-playing.png', landscape=False)
 
     click('全屏（手机横屏）', 'Fullscreen')
     width, height = capture('landscape-playing.png', landscape=True)
+    verify_video_frame(OUTPUT / 'landscape-playing.png', landscape=True)
     if not click(*LOCK, seconds=3, optional=True):
         tap((width // 2, height // 2))
         click(*LOCK, seconds=10)
