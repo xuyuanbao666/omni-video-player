@@ -111,4 +111,5 @@ python scripts/bootstrap.py
 - 全屏纯黑背景，遵循原视频比例；锁定后禁用触控和播放快捷键，保留解锁按钮，返回键可解除。普通模式顶部保留唯一旋转入口；快捷倍速、比例、循环、字幕、音轨及队列。
 - 保留 v0.4.1 已验证的松手跳转、独立滑块状态与稳定视频纹理，用户反馈闪屏已修复。Android 真机跨型号与实际播放仍需验证。
 - Android 播放检查在独立的 Android 14 模拟器任务上运行，使用构建任务上传的通用 APK。通过系统文件选择器打开合成测试视频，检查竖屏播放、横屏全屏、锁定与解锁以及退出全屏后恢复竖屏。截图和失败诊断见 Actions 的 `android-ui-smoke` 归档。
+- Android 模拟器启用硬件加速时，使用 MediaCodec 直接输出到视频 Surface，绕过模拟器的 EGL 黑屏问题。此路径上的播放器内截图、字幕合成和缩略图生成受播放引擎限制。[media_kit 上游问题](https://github.com/media-kit/media-kit/issues/1343)
 - 固定签名由 [独立的签名升级 PR](https://github.com/xuyuanbao666/omni-video-player/pull/5) 跟踪。此分支 Android APK 使用测试签名，旧版签名不同时，升级前需先备份应用数据。

@@ -22,6 +22,7 @@ class MainActivity : FlutterActivity() {
         pipChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "supported" -> result.success(supportsPip())
+                "usesEmulator" -> result.success(Build.HARDWARE == "ranchu" || Build.HARDWARE == "goldfish")
                 "enter" -> {
                     if (!supportsPip() || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
                         result.success(false)

@@ -20,16 +20,29 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 late final SharedPreferences preferences;
+const _androidChannel = MethodChannel('omni_player/pip');
+
+Future<bool> _usesAndroidEmulator() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+  try {
+    return await _androidChannel.invokeMethod<bool>('usesEmulator') ?? false;
+  } on PlatformException {
+    return false;
+  } on MissingPluginException {
+    return false;
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   preferences = await SharedPreferences.getInstance();
-  runApp(const OmniPlayerApp());
+  runApp(OmniPlayerApp(androidEmulator: await _usesAndroidEmulator()));
 }
 
 class OmniPlayerApp extends StatefulWidget {
-  const OmniPlayerApp({super.key});
+  const OmniPlayerApp({super.key, this.androidEmulator = false});
+  final bool androidEmulator;
   @override
   State<OmniPlayerApp> createState() => _OmniPlayerAppState();
 }
@@ -53,6 +66,7 @@ class _OmniPlayerAppState extends State<OmniPlayerApp> {
       inputDecorationTheme: InputDecorationTheme(filled: true, fillColor: light ? Colors.white54 : const Color(0x25232f50), border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
     ),
     home: PlayerScreen(english: english, light: light, glass: glass,
+      androidEmulator: widget.androidEmulator,
       onAccent: (color) { if (mounted && videoAccent != color) setState(() => videoAccent = color); },
       onAppearance: (e, l, g) {
         setState(() { english = e; light = l; glass = g; });
@@ -64,7 +78,8 @@ class _OmniPlayerAppState extends State<OmniPlayerApp> {
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.english, required this.light, required this.glass, required this.onAppearance, required this.onAccent});
+  const PlayerScreen({super.key, required this.english, required this.light, required this.glass, required this.onAppearance, required this.onAccent, this.androidEmulator = false});
+  final bool androidEmulator;
   final bool english, light, glass;
   final void Function(bool, bool, bool) onAppearance;
   final ValueChanged<Color?> onAccent;
@@ -91,7 +106,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   late bool hardwareAcceleration;
   late final Timer historyTimer;
   Future<void> historyWrite = Future.value();
-  static const pipChannel = MethodChannel('omni_player/pip');
+  static const pipChannel = _androidChannel;
   bool pipAvailable = false;
   bool inPip = false;
   bool compact = false;
@@ -165,9 +180,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     resumePlayback = preferences.getBool('resumePlayback') ?? true;
     hardwareAcceleration = preferences.getBool('hardwareAcceleration') ?? true;
     player = Player();
+    // The Android emulator's EGL context may fail before the first video frame.
+    // MediaCodec can render supported clips directly into the Android surface.
+    final directSurface = widget.androidEmulator && hardwareAcceleration;
     controller = VideoController(player, configuration: VideoControllerConfiguration(
       enableHardwareAcceleration: hardwareAcceleration,
-      hwdec: hardwareAcceleration ? null : 'no',
+      vo: directSurface ? 'mediacodec_embed' : null,
+      hwdec: directSurface ? 'mediacodec' : (hardwareAcceleration ? null : 'no'),
     ));
     videoTexture = RepaintBoundary(key: GlobalKey(), child: ValueListenableBuilder<BoxFit>(
       valueListenable: videoFitNotifier, builder: (_, fit, __) => Video(controller: controller, fit: fit, controls: NoVideoControls)));
