@@ -197,11 +197,11 @@ jobs:
       - name: Verify universal APK with local video
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 34
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader -feature -Vulkan -no-snapshot -noaudio -no-boot-anim
+          emulator-options: -no-window -gpu swangle -feature -Vulkan -memory 2048 -cores 2 -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
           script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk omni-smoke-video.mp4
       - name: Upload Android playback evidence
