@@ -18,6 +18,7 @@ collect_diagnostics() {
     sudo dmesg --ctime | tail -n 120 > android-smoke/host-kernel.txt || true
     grep -Ei 'out of memory|oom-kill|killed process|segfault' android-smoke/host-kernel.txt >&2 || true
     timeout 15s adb shell dumpsys activity activities > android-smoke/activities.txt 2>&1 || true
+    grep -Ei 'com\.omniplayer\.app|AndroidRuntime|FATAL EXCEPTION|Impeller|ANR in|EGL_BAD' android-smoke/logcat.txt | tail -n 80 >&2 || true
     timeout 15s adb exec-out screencap -p > android-smoke/failure.png || true
     if [[ ! -s android-smoke/failure.png ]]; then rm -f android-smoke/failure.png; fi
   fi
@@ -31,10 +32,6 @@ echo 'Installing universal APK'
 timeout 120s adb install "$apk"
 timeout 20s adb shell pm path "$pkg"
 echo 'Launching Omni Player'
-timeout 90s adb shell am start -W -n "$pkg/.MainActivity" | tee android-smoke/launch.txt
-grep -q '^Status: ok' android-smoke/launch.txt
-timeout 20s adb shell pidof "$pkg"
-timeout 20s adb exec-out screencap -p > android-smoke/launch.png
-test -s android-smoke/launch.png
-echo "Installed and process running: $pkg"
+timeout 30s adb shell am start -n "$pkg/.MainActivity" | tee android-smoke/launch.txt
 python3 scripts/android_playback_smoke.py "$fixture"
+timeout 20s adb shell pidof "$pkg"

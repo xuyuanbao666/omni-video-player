@@ -82,6 +82,9 @@ def capture(filename, landscape):
 
 def main(fixture):
     OUTPUT.mkdir(exist_ok=True)
+    print('Waiting for the player home screen', flush=True)
+    locate(('打开文件', 'Open files'), seconds=75)
+    capture('launch.png', landscape=False)
     adb('shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0')
     adb('shell', 'settings', 'put', 'system', 'user_rotation', '0')
     adb('shell', 'mkdir', '-p', '/sdcard/Download')
