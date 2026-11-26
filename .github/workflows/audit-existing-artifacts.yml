@@ -1,0 +1,100 @@
+name: Audit existing six-platform artifacts
+on:
+  push:
+    branches: [maintenance/omni-artifact-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download and compare original archive digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p archives audit
+          while read -r platform id sha; do
+            curl --fail --location --silent --show-error --retry 2 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/xuyuanbao666/omni-video-player/actions/artifacts/$id/zip" -o "archives/$platform.zip"
+            echo "$sha  archives/$platform.zip" | sha256sum -c -
+          done <<'ARTIFACTS'
+          android 15075190342 01d32460e391492d263aa451e35707eaca79437142d7f33e3dd9aa41cdff8fa5
+          windows 15073239973 055fa4e7ba8f1827e55cab3aa097977e6ea0b6434f1ba522f87e80984693ded6
+          macos 15074242833 2c977b4e4bcc1a5dd6835e6be2b07624edd13bec67b5a159cea290fd61342fc0
+          linux 15074083671 2c0456db19cb75e18bf8fec2d011082104489f832d69e5c14942682729c7c939
+          ios 15073229850 81de3c02d76afc6c85e3d33523ecaa25f0642464791ade3ec724494669c75ed5
+          web 15074268148 11c0453bde7acaf9d981edc7a619ee0d6c37b2ba1f3b7753d800b2ed8300044b
+          ARTIFACTS
+      - name: Check expected files, archive structure and asset checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, pathlib, re, tarfile, zipfile
+          expected = {
+              'android': r'OmniPlayer-Android-(armeabi-v7a|arm64-v8a|x86_64|universal)-test\.apk',
+              'windows': r'OmniPlayer-Windows-x64-(portable\.zip|Setup\.exe)',
+              'macos': r'OmniPlayer-macOS-(arm64|x86_64)-unnotarized\.dmg',
+              'linux': r'OmniPlayer-Linux-x64\.tar\.gz',
+              'ios': r'OmniPlayer-iOS-unsigned-app\.zip',
+              'web': r'OmniPlayer-Web\.zip',
+          }
+          counts = {'android':4, 'windows':2, 'macos':1, 'linux':1, 'ios':1, 'web':1}
+          assets = pathlib.Path('audit/assets')
+          assets.mkdir()
+          records = []
+          for platform, pattern in expected.items():
+              with zipfile.ZipFile(f'archives/{platform}.zip') as archive:
+                  assert archive.testzip() is None, platform
+                  names = [i.filename for i in archive.infolist() if not i.is_dir()]
+                  assert len(names) == counts[platform], (platform, names)
+                  for name in names:
+                      basename = pathlib.PurePosixPath(name).name
+                      assert re.fullmatch(pattern, basename), (platform, name)
+                      target = assets / basename
+                      assert not target.exists(), basename
+                      target.write_bytes(archive.read(name))
+                      assert target.stat().st_size > 0
+                      if target.suffix in ('.zip', '.apk'):
+                          with zipfile.ZipFile(target) as z:
+                              assert z.testzip() is None, basename
+                              members = z.namelist()
+                              if target.suffix == '.apk':
+                                  assert 'AndroidManifest.xml' in members
+                                  abi = basename.removeprefix('OmniPlayer-Android-').removesuffix('-test.apk')
+                                  abis = ('armeabi-v7a','arm64-v8a','x86_64') if abi == 'universal' else (abi,)
+                                  for arch in abis:
+                                      assert any(n.startswith(f'lib/{arch}/') and n.endswith('.so') for n in members), (basename, arch)
+                              elif platform == 'web':
+                                  assert 'index.html' in members
+                              elif platform == 'ios':
+                                  assert any(n.endswith('.app/Info.plist') for n in members)
+                              elif platform == 'windows':
+                                  assert any(n.lower().endswith('.exe') for n in members)
+                      elif basename.endswith('.tar.gz'):
+                          with tarfile.open(target, 'r:gz') as t:
+                              assert any(m.isfile() for m in t), basename
+                      elif target.suffix == '.exe':
+                          with target.open('rb') as f:
+                              assert f.read(2) == b'MZ'
+                      elif target.suffix == '.dmg':
+                          with target.open('rb') as f:
+                              f.seek(-512, 2)
+                              assert f.read(4) == b'koly'
+                      records.append({'platform':platform,'name':basename,'bytes':target.stat().st_size,'sha256':hashlib.sha256(target.read_bytes()).hexdigest()})
+          pathlib.Path('audit/manifest.json').write_text(json.dumps(records, indent=2)+'\n')
+          pathlib.Path('audit/SHA256SUMS.txt').write_text(''.join(f"{r['sha256']}  {r['name']}\n" for r in records))
+          print(json.dumps(records, indent=2))
+          PY
+          (cd audit/assets && sha256sum -c ../SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: existing-artifact-checksums
+          path: |
+            audit/manifest.json
+            audit/SHA256SUMS.txt
+          retention-days: 14
