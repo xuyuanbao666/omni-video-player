@@ -31,6 +31,8 @@ logcat_pid=$!
 echo 'Installing universal APK'
 timeout 120s adb install "$apk"
 timeout 20s adb shell pm path "$pkg"
+echo 'Confirming Android immersive tutorial for repeatable player test'
+timeout 15s adb shell settings put secure immersive_mode_confirmations confirmed
 echo 'Launching Omni Player'
 timeout 30s adb shell am start -n "$pkg/.MainActivity" | tee android-smoke/launch.txt
 python3 scripts/android_playback_smoke.py "$fixture"

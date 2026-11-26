@@ -1,0 +1,62 @@
+name: Targeted Android playback recheck
+on:
+  push:
+    branches: [maintenance/omni-android-smoke]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  playback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify that only the test harness changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code 9c8f0d3e9fdb6313b29217c3490039d36222346c HEAD -- . ':!scripts/android_smoke.sh' ':!scripts/android_playback_smoke.py' ':!.github/workflows/android-targeted-recheck.yml'
+          python3 -m py_compile scripts/android_playback_smoke.py
+          bash -n scripts/android_smoke.sh
+      - name: Verify and extract the original Android artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/repos/xuyuanbao666/omni-video-player/actions/artifacts/15075190342/zip -o android-artifact.zip
+          echo '01d32460e391492d263aa451e35707eaca79437142d7f33e3dd9aa41cdff8fa5  android-artifact.zip' | sha256sum -c -
+          unzip -q android-artifact.zip -d dist
+          test -f dist/OmniPlayer-Android-universal-test.apk
+          sha256sum dist/OmniPlayer-Android-universal-test.apk
+      - name: Generate local video
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -t 180 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y omni-smoke-video.mp4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify real APK playback
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: -no-window -gpu swangle -feature -Vulkan -memory 2048 -cores 2 -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk omni-smoke-video.mp4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-targeted-playback-evidence
+          path: android-smoke/
+          if-no-files-found: warn
+          retention-days: 14

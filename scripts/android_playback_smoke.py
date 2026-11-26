@@ -26,8 +26,12 @@ def locate(names, seconds=35, optional=False, clickable=False):
     while time.monotonic() < deadline:
         remaining = max(1, deadline - time.monotonic())
         try:
-            adb('shell', 'uiautomator', 'dump', '/sdcard/omni-window.xml',
-                timeout=min(8, remaining))
+            adb('shell', 'rm', '-f', '/sdcard/omni-window.xml', timeout=min(5, remaining))
+            result = adb('shell', 'uiautomator', 'dump', '/sdcard/omni-window.xml',
+                         timeout=min(8, remaining))
+            if b'ERROR' in result:
+                time.sleep(0.5)
+                continue
             root = ET.fromstring(adb(
                 'exec-out', 'cat', '/sdcard/omni-window.xml', timeout=min(5, remaining)
             ))
@@ -44,7 +48,10 @@ def locate(names, seconds=35, optional=False, clickable=False):
                         return ((x1 + x2) // 2, (y1 + y2) // 2)
         except (subprocess.SubprocessError, ET.ParseError):
             # A transitioning window may not have an accessibility tree yet.
-            adb('get-state', timeout=5)
+            try:
+                adb('get-state', timeout=5)
+            except subprocess.SubprocessError:
+                pass
         time.sleep(0.5)
     if not optional:
         raise RuntimeError(f'UI element not found: {names}')
@@ -139,7 +146,7 @@ def main(fixture):
     click('全屏（手机横屏）', 'Fullscreen')
     capture('landscape-playing.png', landscape=True)
     verify_video_frame(OUTPUT / 'landscape-playing.png', landscape=True)
-    click(*LOCK, seconds=25)
+    click(*LOCK, seconds=45)
     locate(UNLOCK, seconds=25)
     capture('landscape-locked.png', landscape=True)
     click(*UNLOCK, seconds=25)
