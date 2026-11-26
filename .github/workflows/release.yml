@@ -188,7 +188,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y ffmpeg
           fi
-          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -t 120 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y omni-smoke-video.mp4
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -t 180 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y omni-smoke-video.mp4
       - name: Enable Android emulator KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

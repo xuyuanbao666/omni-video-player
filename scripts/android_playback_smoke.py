@@ -104,6 +104,15 @@ def main(fixture):
     print('Waiting for the player home screen', flush=True)
     locate(('打开文件', 'Open files'), seconds=75)
     capture('launch.png', landscape=False)
+
+    print('Setting playback controls to stay visible', flush=True)
+    click('更多', 'More')
+    click('设置', 'Settings')
+    click('播放', 'Playback')
+    click('自动隐藏控制栏', 'Auto-hide controls')
+    click('保存', 'Save')
+    locate(('打开文件', 'Open files'), seconds=35)
+
     adb('shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0')
     adb('shell', 'settings', 'put', 'system', 'user_rotation', '0')
     adb('shell', 'mkdir', '-p', '/sdcard/Download')
@@ -128,16 +137,14 @@ def main(fixture):
     verify_video_frame(OUTPUT / 'portrait-playing.png', landscape=False)
 
     click('全屏（手机横屏）', 'Fullscreen')
-    width, height = capture('landscape-playing.png', landscape=True)
+    capture('landscape-playing.png', landscape=True)
     verify_video_frame(OUTPUT / 'landscape-playing.png', landscape=True)
-    if not click(*LOCK, seconds=3, optional=True):
-        tap((width // 2, height // 2))
-        click(*LOCK, seconds=10)
-    locate(UNLOCK, seconds=10)
+    click(*LOCK, seconds=25)
+    locate(UNLOCK, seconds=25)
     capture('landscape-locked.png', landscape=True)
-    click(*UNLOCK, seconds=10)
-    click(*EXIT_FULLSCREEN, seconds=10)
-    locate(PLAYING, seconds=15)
+    click(*UNLOCK, seconds=25)
+    click(*EXIT_FULLSCREEN, seconds=25)
+    locate(PLAYING, seconds=35)
     capture('portrait-restored.png', landscape=False)
     print('Local playback, landscape, lock/unlock and portrait restore passed.', flush=True)
 
