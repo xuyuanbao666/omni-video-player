@@ -122,6 +122,12 @@ def main(fixture):
 
     adb('shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0')
     adb('shell', 'settings', 'put', 'system', 'user_rotation', '0')
+    # Automatic rotation is not a promise to return to portrait. Select the
+    # application's portrait preference explicitly before testing restoration.
+    click('屏幕方向', 'Screen orientation')
+    click('锁定竖屏', 'Portrait')
+    locate(('打开文件', 'Open files'), seconds=35)
+    capture('portrait-preferred.png', landscape=False)
     adb('shell', 'mkdir', '-p', '/sdcard/Download')
     adb('push', fixture, f'/sdcard/Download/{NAME}', timeout=60)
     adb('shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
@@ -152,7 +158,9 @@ def main(fixture):
     click(*UNLOCK, seconds=25)
     click(*EXIT_FULLSCREEN, seconds=25)
     locate(PLAYING, seconds=35)
+    locate(('打开文件', 'Open files'), seconds=35)
     capture('portrait-restored.png', landscape=False)
+    verify_video_frame(OUTPUT / 'portrait-restored.png', landscape=False)
     print('Local playback, landscape, lock/unlock and portrait restore passed.', flush=True)
 
 
