@@ -21,6 +21,46 @@ def adb(*args, timeout=20):
     return subprocess.check_output(['adb', *args], timeout=timeout)
 
 
+def node_labels(node):
+    return node.get('text', '').splitlines() + node.get('content-desc', '').splitlines()
+
+
+def node_center(node):
+    bounds = re.findall(r'\d+', node.get('bounds', ''))
+    if len(bounds) == 4:
+        x1, y1, x2, y2 = map(int, bounds)
+        if x2 > x1 and y2 > y1:
+            return ((x1 + x2) // 2, (y1 + y2) // 2)
+    return None
+
+
+launcher_recoveries = 0
+
+
+def recover_launcher_anr(nodes):
+    global launcher_recoveries
+    titles = [label for node in nodes for label in node_labels(node)
+              if "isn't responding" in label or "keeps stopping" in label]
+    if not titles:
+        return False
+    if titles != ["Pixel Launcher isn't responding"]:
+        raise RuntimeError(f'Unexpected application failure dialog: {titles}')
+    for node in nodes:
+        if node.get('package') == 'android' and 'Close app' in node_labels(node):
+            point = node_center(node)
+            if point is None:
+                continue
+            if launcher_recoveries >= 2:
+                raise RuntimeError('Repeated background Pixel Launcher ANR')
+            launcher_recoveries += 1
+            (OUTPUT / f'launcher-anr-{launcher_recoveries}.png').write_bytes(
+                adb('exec-out', 'screencap', '-p'))
+            print('Dismissing verified emulator Pixel Launcher ANR', flush=True)
+            tap(point)
+            return True
+    raise RuntimeError('Pixel Launcher ANR identified but system close button unavailable')
+
+
 def locate(names, seconds=35, optional=False, clickable=False):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -32,20 +72,26 @@ def locate(names, seconds=35, optional=False, clickable=False):
             if b'ERROR' in result:
                 time.sleep(0.5)
                 continue
-            root = ET.fromstring(adb(
-                'exec-out', 'cat', '/sdcard/omni-window.xml', timeout=min(5, remaining)
-            ))
-            for node in root.iter('node'):
-                labels = node.get('text', '').splitlines() + node.get('content-desc', '').splitlines()
+            xml = adb('exec-out', 'cat', '/sdcard/omni-window.xml',
+                      timeout=min(5, remaining))
+            (OUTPUT / 'last-window.xml').write_bytes(xml)
+            root = ET.fromstring(xml)
+            nodes = list(root.iter('node'))
+            # A real failure screenshot identified the emulator's background
+            # Pixel Launcher ANR over the already-rendered Omni home screen.
+            # Recover only from this exact external system dialog, never from
+            # a player ANR or any unknown application failure.
+            if recover_launcher_anr(nodes):
+                time.sleep(0.5)
+                continue
+            for node in nodes:
                 if clickable and node.get('clickable') != 'true':
                     continue
-                if not any(name in labels for name in names):
+                if not any(name in node_labels(node) for name in names):
                     continue
-                bounds = re.findall(r'\d+', node.get('bounds', ''))
-                if len(bounds) == 4:
-                    x1, y1, x2, y2 = map(int, bounds)
-                    if x2 > x1 and y2 > y1:
-                        return ((x1 + x2) // 2, (y1 + y2) // 2)
+                point = node_center(node)
+                if point is not None:
+                    return point
         except (subprocess.SubprocessError, ET.ParseError):
             # A transitioning window may not have an accessibility tree yet.
             try:
