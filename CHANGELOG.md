@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Separate portrait/window transport controls from the video; thin fullscreen gradient, black background, tap-to-hide and screen lock.
+- Compact seek row and quick playback actions, single orientation menu.
+- Preserve single-seek-on-release behavior and video widget identity.
+- Fixed release signing remains deferred; test-signed Android packages.
+
 ## 0.4.1
 
 - Fix narrow portrait player layout; use full-width 16:9 canvas and useful empty state.

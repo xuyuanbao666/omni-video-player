@@ -102,31 +102,6 @@ jobs:
             "$tools/zipalign" -c -v 4 "$apk" >/dev/null
           done
 
-      - name: Enable Android emulator KVM
-        if: matrix.platform == 'android'
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Install and launch universal APK
-        if: matrix.platform == 'android'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: true
-          script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk
-      - name: Upload Android UI smoke screenshot
-        if: matrix.platform == 'android'
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-ui-smoke
-          path: android-smoke.png
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Build Windows and installer
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -194,8 +169,52 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  publish:
+  android_playback:
+    name: Android install and playback smoke
     needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: omni-android
+          path: dist
+      - name: Generate local playback test fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=640x360:rate=24 -t 180 -c:v libx264 -pix_fmt yuv420p -movflags +faststart -y omni-smoke-video.mp4
+      - name: Enable Android emulator KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify universal APK with local video
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: -no-window -gpu swangle -feature -Vulkan -memory 2048 -cores 2 -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: bash scripts/android_smoke.sh dist/OmniPlayer-Android-universal-test.apk omni-smoke-video.mp4
+      - name: Upload Android playback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ui-smoke
+          path: android-smoke/
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    needs: android_playback
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 15
@@ -227,7 +246,7 @@ jobs:
           test -n "$version"
           tag="preview-v$version-$GITHUB_RUN_NUMBER-$GITHUB_RUN_ATTEMPT"
           cat > release-notes.md <<'EOF'
-          Automated preview build. All six build jobs and unit tests must succeed before publishing.
+          Automated preview build. All six build jobs, unit tests and Android playback smoke checks must succeed before publishing.
           
           - Android: test-signed APKs, select your ABI (most modern phones use arm64-v8a). Not a Play Store release; test keys may differ between CI runs.
           - Windows: unsigned x64 setup EXE and portable ZIP; Windows may display a publisher warning.

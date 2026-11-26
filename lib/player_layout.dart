@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show FontFeature;
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,18 +16,22 @@ List<DeviceOrientation> orientationsFor(ScreenDirection direction, {required boo
 /// Full-width 16:9 surface on narrow portrait layouts. The footer has a
 /// separate scroll region; it can never shrink the video to its text width.
 class PlayerStage extends StatelessWidget {
-  const PlayerStage({super.key, required this.surface, required this.footer, required this.fill, this.empty = false});
+  const PlayerStage({super.key, required this.surface, required this.footer, required this.fill, this.empty = false, this.controls});
   final Widget surface, footer;
+  final Widget? controls;
   final bool fill, empty;
   @override
   Widget build(BuildContext context) => LayoutBuilder(builder: (context, constraints) {
     final portrait = !fill && constraints.maxWidth < 700 && constraints.maxHeight > constraints.maxWidth;
     final width = constraints.maxWidth;
+    final controlHeight = !fill && controls != null ? math.min(88.0, constraints.maxHeight).toDouble() : 0.0;
+    final available = math.max(0.0, constraints.maxHeight - controlHeight).toDouble();
     final height = portrait
-        ? math.min(width * 9 / 16, constraints.maxHeight).toDouble()
-        : (fill ? constraints.maxHeight : math.max(0.0, constraints.maxHeight - (empty ? math.min(240.0, constraints.maxHeight * .48) : 64.0)).toDouble());
+        ? math.min(width * 9 / 16, available).toDouble()
+        : (fill ? available : math.max(0.0, available - (empty ? math.min(240.0, available * .48) : math.min(100.0, available * .25))).toDouble());
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       SizedBox(width: width, height: height, child: surface),
+      if (!fill && controls != null) SizedBox(height: controlHeight, child: controls),
       if (!fill) Expanded(child: SingleChildScrollView(child: footer)),
     ]);
   });
@@ -79,20 +84,17 @@ class _PlaybackScrubberState extends State<PlaybackScrubber> {
         final total = (duration.data ?? Duration.zero).inMilliseconds.toDouble();
         final value = (preview ?? (position.data ?? Duration.zero).inMilliseconds.toDouble())
           .clamp(0.0, math.max(0.0, total)).toDouble();
-        return Column(mainAxisSize: MainAxisSize.min, children: [
-          SliderTheme(data: SliderTheme.of(context).copyWith(trackHeight: 3),
+        return SizedBox(height: 40, child: Row(children: [
+          SizedBox(width: 48, child: Text(widget.formatTime(value.round()), textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontFeatures: [FontFeature.tabularFigures()]))),
+          Expanded(child: SliderTheme(data: SliderTheme.of(context).copyWith(trackHeight: 2, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5), overlayShape: const RoundSliderOverlayShape(overlayRadius: 13)),
             child: Slider(value: value, max: total > 0 ? total : 1,
               onChangeStart: widget.enabled && !committing && total > 0 ? (v) {
                 widget.onScrubbing(true);
                 setState(() { dragging = true; preview = v; });
               } : null,
               onChanged: widget.enabled && !committing && total > 0 ? (v) => setState(() => preview = v) : null,
-              onChangeEnd: widget.enabled && !committing && total > 0 ? (v) => unawaited(commit(v)) : null)),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              Text(widget.formatTime(value.round()), style: const TextStyle(fontSize: 11)),
-              Text(total > 0 ? widget.formatTime(total.round()) : '--:--', style: const TextStyle(fontSize: 11)),
-            ])),
-        ]);
+              onChangeEnd: widget.enabled && !committing && total > 0 ? (v) => unawaited(commit(v)) : null))),
+          SizedBox(width: 48, child: Text(total > 0 ? widget.formatTime(total.round()) : '--:--', textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontFeatures: [FontFeature.tabularFigures()]))),
+        ]));
       }));
 }

@@ -20,16 +20,29 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 late final SharedPreferences preferences;
+const _androidChannel = MethodChannel('omni_player/pip');
+
+Future<bool> _usesAndroidEmulator() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+  try {
+    return await _androidChannel.invokeMethod<bool>('usesEmulator') ?? false;
+  } on PlatformException {
+    return false;
+  } on MissingPluginException {
+    return false;
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   preferences = await SharedPreferences.getInstance();
-  runApp(const OmniPlayerApp());
+  runApp(OmniPlayerApp(androidEmulator: await _usesAndroidEmulator()));
 }
 
 class OmniPlayerApp extends StatefulWidget {
-  const OmniPlayerApp({super.key});
+  const OmniPlayerApp({super.key, this.androidEmulator = false});
+  final bool androidEmulator;
   @override
   State<OmniPlayerApp> createState() => _OmniPlayerAppState();
 }
@@ -53,6 +66,7 @@ class _OmniPlayerAppState extends State<OmniPlayerApp> {
       inputDecorationTheme: InputDecorationTheme(filled: true, fillColor: light ? Colors.white54 : const Color(0x25232f50), border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12)),
     ),
     home: PlayerScreen(english: english, light: light, glass: glass,
+      androidEmulator: widget.androidEmulator,
       onAccent: (color) { if (mounted && videoAccent != color) setState(() => videoAccent = color); },
       onAppearance: (e, l, g) {
         setState(() { english = e; light = l; glass = g; });
@@ -64,7 +78,8 @@ class _OmniPlayerAppState extends State<OmniPlayerApp> {
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.english, required this.light, required this.glass, required this.onAppearance, required this.onAccent});
+  const PlayerScreen({super.key, required this.english, required this.light, required this.glass, required this.onAppearance, required this.onAccent, this.androidEmulator = false});
+  final bool androidEmulator;
   final bool english, light, glass;
   final void Function(bool, bool, bool) onAppearance;
   final ValueChanged<Color?> onAccent;
@@ -91,11 +106,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   late bool hardwareAcceleration;
   late final Timer historyTimer;
   Future<void> historyWrite = Future.value();
-  static const pipChannel = MethodChannel('omni_player/pip');
+  static const pipChannel = _androidChannel;
   bool pipAvailable = false;
   bool inPip = false;
   bool compact = false;
   bool immersive = false;
+  bool controlsLocked = false;
   late final MediaLibrary library;
   String libraryQuery = '';
   bool favoritesOnly = false;
@@ -164,9 +180,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     resumePlayback = preferences.getBool('resumePlayback') ?? true;
     hardwareAcceleration = preferences.getBool('hardwareAcceleration') ?? true;
     player = Player();
+    // The Android emulator's EGL context may fail before the first video frame.
+    // MediaCodec can render supported clips directly into the Android surface.
+    final directSurface = widget.androidEmulator && hardwareAcceleration;
     controller = VideoController(player, configuration: VideoControllerConfiguration(
       enableHardwareAcceleration: hardwareAcceleration,
-      hwdec: hardwareAcceleration ? null : 'no',
+      vo: directSurface ? 'mediacodec_embed' : null,
+      hwdec: directSurface ? 'mediacodec' : (hardwareAcceleration ? null : 'no'),
     ));
     videoTexture = RepaintBoundary(key: GlobalKey(), child: ValueListenableBuilder<BoxFit>(
       valueListenable: videoFitNotifier, builder: (_, fit, __) => Video(controller: controller, fit: fit, controls: NoVideoControls)));
@@ -186,6 +206,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (before != currentSource) {
         attemptedPreview = null;
         scrubbing = false;
+        controlsLocked = false;
         final key = currentSource;
         widget.onAccent(dynamicAccent && key != null ? previews[key]?.accent : null);
         revealDock();
@@ -211,12 +232,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void revealDock() {
     dockTimer?.cancel();
-    if (!mounted) return;
+    if (!mounted || controlsLocked) return;
     if (!dockVisible) setState(() => dockVisible = true);
-    if (!autoHide || !playing || dockHovered || busy || scrubbing || seeking || !foreground ||
+    if (!compact || !autoHide || !playing || dockHovered || busy || scrubbing || seeking || !foreground ||
         MediaQuery.maybeOf(context)?.accessibleNavigation == true) return;
     dockTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted && playing && !busy && !dockHovered && !scrubbing && !seeking && foreground) {
+      if (mounted && compact && !controlsLocked && playing && !busy && !dockHovered && !scrubbing && !seeking && foreground) {
         setState(() => dockVisible = false);
       }
     });
@@ -386,8 +407,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> toggleImmersive() async {
     if (!mounted || inPip || orientationChanging) return;
+    if (controlsLocked) { unlockControls(); return; }
     orientationChanging = true;
-    setState(() { immersive = !immersive; compact = immersive; mobilePage = 0; });
+    dockTimer?.cancel();
+    setState(() { immersive = !immersive; compact = immersive; mobilePage = 0; dockVisible = true; controlsLocked = false; dockHovered = false; scrubbing = false; });
     try {
       if (mobile) {
         await applyOrientation();
@@ -395,6 +418,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
     } catch (_) { /* OS may enforce edge-to-edge mode. */ }
     finally { orientationChanging = false; if (mounted) revealDock(); }
+  }
+
+  void toggleControls() {
+    if (!compact || !hasMedia || controlsLocked || scrubbing || seeking || busy) return;
+    if (dockVisible) { dockTimer?.cancel(); setState(() => dockVisible = false); }
+    else { revealDock(); }
+  }
+
+  void lockControls() {
+    if (!compact || scrubbing || seeking || busy) return;
+    dockTimer?.cancel();
+    setState(() { controlsLocked = true; dockVisible = false; gestureMessage = null; dockHovered = false; });
+  }
+
+  void unlockControls() {
+    if (!mounted) return;
+    setState(() { controlsLocked = false; dockVisible = true; });
+    revealDock();
   }
 
   Widget directionMenu({bool onVideo = false}) => PopupMenuButton<ScreenDirection>(
@@ -419,7 +460,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Widget touchSurface() => LayoutBuilder(builder: (context, size) => GestureDetector(
     behavior: HitTestBehavior.opaque,
-    onTap: revealDock,
+    onTap: compact ? toggleControls : revealDock,
     onDoubleTapDown: (d) {
       gestureSide = d.localPosition.dx < size.maxWidth / 2 ? -1 : 1;
     },
@@ -483,6 +524,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   KeyEventResult handleKey(FocusNode node, KeyEvent event) {
+    if (controlsLocked) {
+      if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.escape) { unlockControls(); return KeyEventResult.handled; }
+      return KeyEventResult.ignored;
+    }
     if (event is! KeyDownEvent || busy || !hasMedia || FocusManager.instance.primaryFocus?.context?.findAncestorWidgetOfExactType<EditableText>() != null || FocusManager.instance.primaryFocus?.context?.widget is EditableText) return KeyEventResult.ignored;
     revealDock();
     final key = event.logicalKey;
@@ -909,6 +954,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           ListTile(leading:const Icon(Icons.repeat), title:Text(tr('循环模式','Repeat')),
             subtitle:Text(mode==PlaylistMode.none?tr('关闭','Off'):mode==PlaylistMode.loop?tr('列表循环','Queue'):tr('单曲循环','One')),
             onTap:()async{await run(()=>player.setPlaylistMode(mode==PlaylistMode.none?PlaylistMode.loop:mode==PlaylistMode.loop?PlaylistMode.single:PlaylistMode.none));if(sheet.mounted)refresh((){});}),
+          ListTile(leading:const Icon(Icons.skip_previous),title:Text(tr('上一项','Previous')),onTap:!hasMedia?null:(){Navigator.pop(sheet);unawaited(run(player.previous));}),
+          ListTile(leading:const Icon(Icons.skip_next),title:Text(tr('下一项','Next')),onTap:!hasMedia?null:(){Navigator.pop(sheet);unawaited(run(player.next));}),
           ListTile(leading:const Icon(Icons.audiotrack),title:Text(tr('音轨','Audio track')),onTap:!hasMedia?null:(){Navigator.pop(sheet);unawaited(audioTracks());}),
           ListTile(leading:const Icon(Icons.subtitles_outlined),title:Text(tr('字幕','Subtitles')),onTap:!hasMedia?null:(){Navigator.pop(sheet);unawaited(subtitles());}),
           ListTile(leading:const Icon(Icons.camera_alt_outlined),title:Text(tr('截图','Screenshot')),onTap:!hasMedia?null:(){Navigator.pop(sheet);unawaited(screenshot());}),
@@ -918,23 +965,65 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (mounted) revealDock();
   }
 
-  Widget dock() => Theme(
-    data: ThemeData(useMaterial3:true,brightness:Brightness.dark,colorSchemeSeed:Theme.of(context).colorScheme.primary),
-    child: MouseRegion(onEnter: (_) { dockHovered = true; revealDock(); }, onExit: (_) { dockHovered = false; revealDock(); },
-      child: Listener(onPointerDown: (_) => revealDock(), onPointerMove: (_) => revealDock(),
-        child: FloatingDock(visible: dockVisible || !playing || busy || !autoHide, glass: widget.glass,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            progress(),
-            SizedBox(height: 46, child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              IconButton(tooltip:tr('上一项','Previous'),onPressed:busy||!hasMedia?null:()=>run(player.previous),icon:const Icon(Icons.skip_previous_rounded)),
-              IconButton(tooltip:tr('后退10秒','Back 10 seconds'),onPressed:busy||!hasMedia?null:()=>seekBy(-10),icon:const Icon(Icons.replay_10_rounded)),
-              IconButton.filled(tooltip:playing?tr('暂停','Pause'):tr('播放','Play'),onPressed:busy||!hasMedia?null:()=>run(player.playOrPause),icon:Icon(playing?Icons.pause_rounded:Icons.play_arrow_rounded)),
-              IconButton(tooltip:tr('前进10秒','Forward 10 seconds'),onPressed:busy||!hasMedia?null:()=>seekBy(10),icon:const Icon(Icons.forward_10_rounded)),
-              IconButton(tooltip:tr('下一项','Next'),onPressed:busy||!hasMedia?null:()=>run(player.next),icon:const Icon(Icons.skip_next_rounded)),
-              IconButton(tooltip:tr('更多播放选项','Playback options'),onPressed:busy?null:playbackOptions,icon:const Icon(Icons.more_horiz_rounded)),
-            ]))),
-          ]))),
-    ));
+  Widget transportButton(String tooltip, IconData icon, VoidCallback? action, {bool primary = false}) =>
+    IconButton(tooltip: tooltip, onPressed: action, icon: Icon(icon),
+      style: IconButton.styleFrom(
+        minimumSize: const Size(44,44), maximumSize: const Size(48,48),
+        padding: EdgeInsets.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        foregroundColor: primary ? Theme.of(context).colorScheme.primary : null,
+      ), iconSize: primary ? 32 : 22);
+
+  Widget speedMenu() => PopupMenuButton<double>(
+    tooltip: tr('播放速度','Playback speed'), enabled: !busy && hasMedia,
+    initialValue: rate,
+    onSelected: (v) => unawaited(run(() => player.setRate(v))),
+    itemBuilder: (_) => [for (final v in [0.5,0.75,1.0,1.25,1.5,2.0]) PopupMenuItem(value:v,child:Text('${v}×'))],
+    child: Padding(padding: const EdgeInsets.symmetric(horizontal:10,vertical:12),
+      child: Text('${rate.toStringAsFixed(rate == rate.roundToDouble() ? 1 : 2)}×', style: const TextStyle(fontSize:13,fontWeight:FontWeight.w600))),
+  );
+
+  Widget fitMenu() => PopupMenuButton<BoxFit>(
+    tooltip: tr('视频比例','Video fit'), enabled: !busy && hasMedia,
+    initialValue: videoFit,
+    icon: const Icon(Icons.aspect_ratio_rounded,size:20),
+    onSelected: (v) => setState(() => videoFit = v),
+    itemBuilder: (_) => [
+      PopupMenuItem(value:BoxFit.contain,child:Text(tr('原始比例','Fit'))),
+      PopupMenuItem(value:BoxFit.cover,child:Text(tr('裁剪填满','Crop'))),
+      PopupMenuItem(value:BoxFit.fill,child:Text(tr('拉伸','Stretch'))),
+    ],
+  );
+
+  Widget dock({required bool fullscreen}) {
+    final enabled = !busy && hasMedia && !controlsLocked;
+    final controls = CinemaControls(
+      visible: !fullscreen || (dockVisible && !controlsLocked),
+      fullscreen: fullscreen,
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        progress(),
+        SizedBox(height: 44, child: LayoutBuilder(builder: (context, size) {
+          final actions = [
+            if (fullscreen) transportButton(tr('锁定控件','Lock controls'), Icons.lock_outline_rounded, enabled ? lockControls : null),
+            if (fullscreen || size.maxWidth >= 340) transportButton(tr('上一项','Previous'),Icons.skip_previous_rounded,enabled?()=>run(player.previous):null),
+            if (!fullscreen || size.maxWidth >= 480) transportButton(tr('后退10秒','Back 10 seconds'),Icons.replay_10_rounded,enabled?()=>seekBy(-10):null),
+            transportButton(playing?tr('暂停','Pause'):tr('播放','Play'),playing?Icons.pause_rounded:Icons.play_arrow_rounded,enabled?()=>run(player.playOrPause):null,primary:true),
+            if (!fullscreen || size.maxWidth >= 480) transportButton(tr('前进10秒','Forward 10 seconds'),Icons.forward_10_rounded,enabled?()=>seekBy(10):null),
+            if (fullscreen || size.maxWidth >= 340) transportButton(tr('下一项','Next'),Icons.skip_next_rounded,enabled?()=>run(player.next):null),
+            if (fullscreen && size.maxWidth >= 480) speedMenu(),
+            transportButton(tr('更多播放选项','Playback options'),Icons.more_horiz_rounded,enabled?playbackOptions:null),
+            transportButton(fullscreen?tr('退出全屏','Exit fullscreen'):tr('全屏（手机横屏）','Fullscreen'),fullscreen?Icons.fullscreen_exit_rounded:Icons.fullscreen_rounded,orientationChanging?null:toggleImmersive),
+          ];
+          return SingleChildScrollView(scrollDirection: Axis.horizontal, child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: size.maxWidth), child: Row(mainAxisAlignment:MainAxisAlignment.spaceEvenly,children:actions)));
+        })),
+      ]));
+    if (!fullscreen) return controls;
+    return Theme(
+      data: ThemeData(useMaterial3:true,brightness:Brightness.dark,colorSchemeSeed:const Color(0xffa6c8ff)),
+      child: IgnorePointer(ignoring: !dockVisible || controlsLocked, child: MouseRegion(onEnter: (_) { if (!mobile) { dockHovered = true; revealDock(); } }, onExit: (_) { dockHovered = false; revealDock(); },
+        child: Listener(onPointerDown: (_) => revealDock(), onPointerMove: (_) => revealDock(), child: controls))),
+    );
+  }
 
   Widget emptySurface() => DecoratedBox(
     decoration: BoxDecoration(gradient: LinearGradient(
@@ -953,20 +1042,32 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   );
 
   Widget playerFooter() {
-    if (hasMedia) return Padding(padding: const EdgeInsets.fromLTRB(4,12,4,0),child:Column(
+    if (hasMedia) return Padding(padding: const EdgeInsets.fromLTRB(4,4,4,0),child:Column(
       crossAxisAlignment: CrossAxisAlignment.stretch, children:[
+        const Divider(height: 12),
         Row(children:[
-          Expanded(child:Text(nowPlaying,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:16,fontWeight:FontWeight.w600))),
-          Text(playing?tr('播放中','Playing'):tr('已暂停','Paused'),style:TextStyle(color:Theme.of(context).colorScheme.primary)),
+          Expanded(child:Text(nowPlaying,maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:14,fontWeight:FontWeight.w600))),
+          const SizedBox(width: 8),
+          Text(playing?tr('播放中','Playing'):tr('已暂停','Paused'),style:TextStyle(fontSize:12,color:Theme.of(context).colorScheme.primary)),
         ]),
+        Wrap(spacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children:[
+          IconButton(tooltip:tr('循环模式','Repeat'),isSelected:mode!=PlaylistMode.none,onPressed:busy?null:()=>run(()=>player.setPlaylistMode(mode==PlaylistMode.none?PlaylistMode.loop:mode==PlaylistMode.loop?PlaylistMode.single:PlaylistMode.none)),icon:Icon(mode==PlaylistMode.single?Icons.repeat_one:Icons.repeat_rounded,size:20)),
+          speedMenu(),
+          IconButton(tooltip:tr('字幕','Subtitles'),onPressed:busy?null:subtitles,icon:const Icon(Icons.subtitles_outlined,size:20)),
+          fitMenu(),
+          IconButton(tooltip:tr('音轨','Audio track'),onPressed:busy?null:audioTracks,icon:const Icon(Icons.audiotrack_rounded,size:20)),
+          if (mobile) IconButton(tooltip:tr('播放队列','Play queue'),onPressed:()=>setState(()=>mobilePage=2),icon:const Icon(Icons.queue_music_rounded,size:20)),
+        ]),
+        if (mobile && MediaQuery.sizeOf(context).height > MediaQuery.sizeOf(context).width) ...[
+          const Divider(height: 16),
+          Row(children:[Expanded(child:Text(tr('播放队列','Play queue'),style:Theme.of(context).textTheme.titleSmall)),TextButton(onPressed:()=>setState(()=>mobilePage=2),child:Text(tr('全部','View all')))]),
+          for (final entry in playlist.medias.asMap().entries.skip(playlist.index.clamp(0,playlist.medias.length).toInt()).take(3))
+            ListTile(dense:true,contentPadding:EdgeInsets.zero,leading:Icon(entry.key==playlist.index?Icons.play_circle_outline:Icons.video_file_outlined),title:Text(title(entry.value),maxLines:1,overflow:TextOverflow.ellipsis),selected:entry.key==playlist.index,onTap:busy?null:()=>run(()async{await player.jump(entry.key);await player.play();})),
+        ],
         if (error != null) Row(children:[
           Expanded(child:Text(error!,maxLines:2,overflow:TextOverflow.ellipsis,style:TextStyle(color:Theme.of(context).colorScheme.error))),
           IconButton(onPressed:()=>setState(()=>error=null),icon:const Icon(Icons.close)),
         ]),
-        if (MediaQuery.sizeOf(context).width < 700 && MediaQuery.sizeOf(context).height > MediaQuery.sizeOf(context).width)
-          Padding(padding: const EdgeInsets.only(top: 12), child: GlassPanel(enabled: widget.glass, blur: false, radius: 20,
-            child: ListTile(leading: const Icon(Icons.queue_music),title:Text(tr('播放队列','Play queue')),
-              subtitle:Text('${playlist.medias.length} ${tr('项媒体','items')}'),trailing:const Icon(Icons.chevron_right),onTap:()=>setState(()=>mobilePage=2)))),
       ]));
     final recent = history.entries.take(3).toList();
     return Padding(padding: const EdgeInsets.fromLTRB(2,18,2,12),child:Column(crossAxisAlignment: CrossAxisAlignment.stretch,children:[
@@ -999,26 +1100,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Widget videoPane() => PlayerStage(
     fill: compact || inPip,
+    controls: !compact && !inPip && hasMedia ? dock(fullscreen:false) : null,
     empty: !hasMedia,
     footer: playerFooter(),
     surface: ClipRRect(borderRadius: BorderRadius.circular(compact || inPip ? 0 : 22),
-      child: ColoredBox(color: Colors.black, child: MouseRegion(onHover: (_) => revealDock(),
-        child: Listener(onPointerDown: (_) => revealDock(), child: Stack(fit: StackFit.expand,alignment: Alignment.center, children: [
+      child: ColoredBox(color: Colors.black, child: MouseRegion(onHover: (_) { if (!mobile && compact) revealDock(); },
+        child: Listener(child: Stack(fit: StackFit.expand,alignment: Alignment.center, children: [
           // This exact widget instance survives playback/slider state changes.
           Positioned.fill(child: videoTexture),
           if(!hasMedia) Positioned.fill(child:emptySurface()),
           if(dim>0 && hasMedia) Positioned.fill(child:IgnorePointer(child:ColoredBox(color:Colors.black.withValues(alpha:dim)))),
-          if(hasMedia && !inPip) Positioned.fill(child:touchSurface()),
+          if(hasMedia && !inPip && !controlsLocked) Positioned.fill(child:touchSurface()),
           if(showBuffering && hasMedia && !scrubbing && !seeking) const Center(child:IgnorePointer(child:CircularProgressIndicator())),
           if(gestureMessage!=null&&!inPip) Center(child:IgnorePointer(child:DecoratedBox(decoration:BoxDecoration(color:Colors.black87,borderRadius:BorderRadius.circular(16)),child:Padding(padding:const EdgeInsets.all(14),child:Text(gestureMessage!,style:const TextStyle(color:Colors.white)))))),
-          if(!inPip && (hasMedia || compact)) Positioned(top:6,right:6,child:Row(mainAxisSize:MainAxisSize.min,children:[
-            if(mobile && !compact) Material(color:const Color(0x990c1422),shape:const CircleBorder(),child:directionMenu(onVideo:true)),
-            const SizedBox(width:4),
-            IconButton.filledTonal(
-              tooltip:compact?tr('退出全屏','Exit fullscreen'):tr('全屏（手机横屏）','Fullscreen'),
-              onPressed:toggleImmersive,icon:Icon(compact?Icons.fullscreen_exit_rounded:Icons.fullscreen_rounded)),
-          ])),
-          if(!inPip && hasMedia) Positioned(bottom:8,left:0,right:0,child:Center(child:ConstrainedBox(constraints:const BoxConstraints(maxWidth:540),child:Padding(padding:const EdgeInsets.symmetric(horizontal:8),child:dock())))),
+          if(compact && !inPip && controlsLocked) Positioned(top:8,right:12,child:SafeArea(
+            child:IconButton.filledTonal(tooltip:tr('解除锁定','Unlock controls'),onPressed:unlockControls,icon:const Icon(Icons.lock_open_rounded)))),
+          if(compact && !inPip && hasMedia) Positioned(bottom:0,left:0,right:0,
+            child:SafeArea(top:false,child:dock(fullscreen:true))),
+          if(compact && !inPip && !hasMedia) Positioned(top:8,right:12,child:SafeArea(
+            child:IconButton(tooltip:tr('退出全屏','Exit fullscreen'),onPressed:toggleImmersive,icon:const Icon(Icons.fullscreen_exit_rounded,color:Colors.white)))),
+
         ])),
       ),
     )),
@@ -1031,7 +1132,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     Expanded(child:libraryTab?libraryPane():queue()),
   ]));
 
-  Widget mobileNavigation() => Padding(padding:const EdgeInsets.fromLTRB(12,6,12,8),child:GlassPanel(enabled:widget.glass,radius:28,child:Row(mainAxisAlignment:MainAxisAlignment.spaceEvenly,children:[
+  Widget mobileNavigation() => Padding(padding:const EdgeInsets.fromLTRB(12,6,12,8),child:GlassPanel(enabled:widget.glass,radius:22,blur:false,child:Row(mainAxisAlignment:MainAxisAlignment.spaceEvenly,children:[
     for(final e in [(Icons.play_circle_outline,tr('播放','Player')),(Icons.video_library_outlined,tr('媒体库','Library')),(Icons.queue_music,tr('队列','Queue'))].asMap().entries)
       Expanded(child:InkWell(borderRadius:BorderRadius.circular(24),onTap:(){setState(()=>mobilePage=e.key);revealDock();},child:Padding(padding:const EdgeInsets.symmetric(vertical:8),child:Column(mainAxisSize:MainAxisSize.min,children:[
         Icon(e.value.$1,color:mobilePage==e.key?Theme.of(context).colorScheme.primary:null),
@@ -1041,6 +1142,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) => PopScope(canPop: !compact, onPopInvokedWithResult: (didPop, _) { if(!didPop && compact) unawaited(toggleImmersive()); }, child: Focus(focusNode:keyboardFocus,autofocus:true,onKeyEvent:handleKey,child:Scaffold(
+    backgroundColor: compact || inPip ? Colors.black : null,
     appBar:inPip||compact?null:AppBar(backgroundColor:Colors.transparent,title:Row(children:[
       const OmniMark(size:34),const SizedBox(width:10),const Flexible(child:Text('Omni',overflow:TextOverflow.ellipsis,style:TextStyle(fontWeight:FontWeight.w700))),
     ]),actions:[
@@ -1060,7 +1162,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         const PopupMenuItem(enabled:false,child:Text('v$currentVersion')),
       ]),
     ]),
-    body:GlassBackdrop(enabled:widget.glass&&!compact&&!inPip,child:SafeArea(child:LayoutBuilder(builder:(context,size){
+    body:GlassBackdrop(enabled:widget.glass&&!compact&&!inPip,child:SafeArea(top:!compact&&!inPip,bottom:!compact&&!inPip,left:!compact&&!inPip,right:!compact&&!inPip,child:LayoutBuilder(builder:(context,size){
       final wide=size.maxWidth>=880 && size.maxHeight>=300;
       final minimal=inPip||compact||size.maxHeight<220;
       // Keep one Video widget mounted through page changes and breakpoint changes.
